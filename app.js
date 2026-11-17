@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.2";
+const APP_VERSION = "2.2.3";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -90,7 +90,8 @@ function scheduleSync(ms) { clearTimeout(syncState.timer); syncState.timer = set
 
 async function sync() {
   renderSync();
-  if (!config || !config.url || syncState.busy || !navigator.onLine) { renderSync(); return; }
+  if (syncState.busy) { syncState.again = true; return; }
+  if (!config || !config.url || !navigator.onLine) { renderSync(); return; }
   syncState.busy = true; renderSync();
   try {
     const pending = Object.entries(queue);
@@ -117,6 +118,7 @@ async function sync() {
     syncState.error = String(e && e.message || e);
   } finally {
     syncState.busy = false; render(); renderSync(); notifyIfNew();
+    if (syncState.again) { syncState.again = false; scheduleSync(300); }
   }
 }
 async function fetchJson(url, opts) {
@@ -500,12 +502,13 @@ function vRow(w, m) {
 }
 function vDetail(w, c) {
   const save = f => put("vwork", { ...DB.vwork.get(w.id), ...f });
+  const move = f => { const cur = DB.vwork.get(w.id); if (cur.blocker) { f.blocker = ""; f.note = (cur.note ? cur.note + "; " : "") + "Old blocker: " + cur.blocker; setStatus("Moved it forward and cleared the old blocker (saved in Notes)."); } save(f); render(true); };
   const lastDue = p => { let x = p; for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, 1); return x; };
   const nextDue = p => lastDue(p ? addM(p, 1) : (w.start || prevMonth()));
   const prevDue = p => { if (!p) return ""; let x = addM(p, -1); for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, -1); return vDue(w, x) ? x : ""; };
   const steps = el("div", { class: "stepper" });
-  V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.vstep === k ? "on " : "") + cls, "aria-pressed": w.vstep === k ? "true" : "false", onclick: () => { save({ vstep: w.vstep === k ? "" : k }); render(true); } }, n)));
-  steps.append(el("button", { type: "button", class: "s5", onclick: () => { if (!w.rthru) { setStatus("Mark a month received first."); return; } save({ cthru: w.rthru, vstep: "" }); render(true); } }, "Printed & complete"));
+  V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.vstep === k ? "on " : "") + cls, "aria-pressed": w.vstep === k ? "true" : "false", onclick: () => { if (w.vstep === k) { save({ vstep: "" }); render(true); } else if (k === "progress" || k === "review") move({ vstep: k }); else { save({ vstep: k }); render(true); } } }, n)));
+  steps.append(el("button", { type: "button", class: "s5", onclick: () => { const d = w.rthru && (!w.cthru || w.cthru < w.rthru) ? w.rthru : nextDue(w.cthru); move({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); } }, "Printed & complete"));
   const mi = (id, v, f) => { const i = el("input", { type: "month", id }); i.value = v || ""; i.addEventListener("change", () => { save({ [f]: i.value }); render(true); }); return i; };
   const soft = el("select", { id: "vs-" + w.id }, ...V_SOFT.map(([k, n]) => el("option", { value: k, text: n }))); soft.value = c.software || "";
   soft.addEventListener("change", () => { put("vclients", { ...c, software: soft.value }); render(true); });
@@ -520,8 +523,8 @@ function vDetail(w, c) {
   return el("div", { class: "detail-card" },
     links.childNodes.length ? links : null,
     el("div", { class: "btnrow" },
-      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => { save({ rthru: nextDue(w.rthru), vstep: w.rthru && w.cthru && w.cthru < w.rthru ? w.vstep : "" }); render(true); } }),
-      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); save({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); render(true); } })),
+      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => move({ rthru: nextDue(w.rthru), vstep: w.rthru && w.cthru && w.cthru < w.rthru ? w.vstep : "" }) }),
+      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); move({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); } })),
     (w.cthru || w.rthru) ? el("div", { class: "btnrow" },
       w.cthru ? el("button", { type: "button", class: "btn ghost small", text: "↩ Undo complete " + mShort(w.cthru), onclick: () => { save({ cthru: prevDue(w.cthru) }); setStatus(mShort(w.cthru) + " is back to not complete."); render(true); } }) : null,
       w.rthru ? el("button", { type: "button", class: "btn ghost small", text: "↩ Undo received " + mShort(w.rthru), onclick: () => { const r = prevDue(w.rthru); save({ rthru: r, cthru: w.cthru && (!r || w.cthru > r) ? r : w.cthru, vstep: "" }); setStatus(mShort(w.rthru) + " is back to not received."); render(true); } }) : null) : null,
