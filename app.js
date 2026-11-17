@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.4";
+const APP_VERSION = "2.2.5";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -230,16 +230,18 @@ function textInput(id, value, onSave, ph) {
 function alerts() {
   const out = [], today = new Date(), dom = today.getDate(), tm = thisMonth(), pm = prevMonth(), dim = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   for (const c of live("aclients")) {
+    if (c.inactive) continue;
     if (c.type === "books") {
       const cur = DB.awork.get(c.id + "-" + tm);
       if (!(cur && cur.invoiced)) out.push({ job: "absolute", cls: "over", text: "Invoice " + c.name + " for " + mLabel(tm) + (c.fee ? " ($" + c.fee + ")" : ""), act: () => { put("awork", { ...(cur || { id: c.id + "-" + tm, client: c.id, period: tm, step: 0 }), invoiced: todayStr() }); render(true); }, actLabel: "Mark invoiced" });
       const wd = today.getDay() >= 1 && today.getDay() <= 5;
       if (wd && c.lastClassified !== todayStr()) out.push({ job: "absolute", cls: "today", text: "Classify today's transactions: " + c.name, act: () => { put("aclients", { ...c, lastClassified: todayStr() }); render(true); }, actLabel: "Done today" });
     } else {
-      const w = DB.awork.get(c.id + "-" + pm), wc = DB.awork.get(c.id + "-" + tm);
-      if (dom >= dim - 2 && !(wc && wc.step >= 1)) out.push({ job: "absolute", cls: "today", text: "Reach out to " + c.name + " for " + mLabel(tm) + "'s job", go: "absolute" });
-      if (w && w.step === 3) out.push({ job: "absolute", cls: "over", text: "Invoice " + c.name + " for " + mLabel(pm), go: "absolute" });
-      if (!w || w.step < 1) out.push({ job: "absolute", cls: "over", text: "Reach out to " + c.name + " for " + mLabel(pm) + "'s job", go: "absolute" });
+      if (c.type !== "va") continue;
+      const P = vaActive(c), st = aRec(c, P).step, t = todayStr(), late = t >= vaDue(P), soon = t >= ymd(addDays(parseYmd(vaReach(P)), -2));
+      if (st === 3) out.push({ job: "absolute", cls: "over", text: "Invoice " + c.name + " for " + mLabel(P) + "'s job", go: "absolute" });
+      else if (st === 0 && soon) out.push({ job: "absolute", cls: late ? "over" : "today", text: "Reach out to " + c.name + " for " + mLabel(P) + "'s job (due " + fmtDay(vaDue(P)) + ")", go: "absolute" });
+      else if (st > 0 && soon) out.push({ job: "absolute", cls: late ? "over" : "today", text: "Finish " + c.name + "'s " + mLabel(P) + " job (due " + fmtDay(vaDue(P)) + ")", go: "absolute" });
     }
   }
   for (const a of assocs()) {
@@ -556,7 +558,11 @@ const aClients = () => aAll().filter(c => !c.inactive && c.type !== "weekly");
 const aSteps = c => c.type === "va" ? A_VA : A_BOOKS;
 function aRec(c, p) { return DB.awork.get(c.id + "-" + p) || { id: c.id + "-" + p, client: c.id, period: p, step: 0, blocker: "", note: "", invoiced: "" }; }
 const aDone = (c, p) => aRec(c, p).step >= aSteps(c).length - 1;
-function absDue(c, p) { const day = c.dueDay || (c.type === "va" ? 3 : 15); return ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), day)); }
+/* Assistant (VA) clients: the job for month P — reach out on P's last day, due the 1st of the next month. Moves to the next month once invoiced. */
+function vaActive(c) { const tm = thisMonth(); for (let p = c.start && c.start < tm ? c.start : tm; p <= tm; p = addM(p, 1)) if (!aDone(c, p)) return p; return addM(tm, 1); }
+const vaReach = p => ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), 0));
+const vaDue = p => ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), 1));
+function absDue(c, p) { if (c.type === "va") return vaDue(p); const day = c.dueDay || 15; return ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), day)); }
 function absOpenMonths(c) { const out = [], end = prevMonth(); if (!c.start) return aDone(c, end) ? [] : [end]; for (let p = c.start; p <= end; p = addM(p, 1)) if (!aDone(c, p)) out.push(p); return out; }
 function absStats(p) {
   let total = 0, done = 0, blockers = 0;
@@ -570,7 +576,7 @@ function renderAbsolute(main) {
   main.append(el("section", { class: "card" }, bigPct(st.pct, st.done + " of " + st.total + " clients done for " + mLabel(p) + (backlog ? " · " + backlog + " past-due month" + (backlog > 1 ? "s" : "") : "") + (st.blockers ? " · " + st.blockers + " blocked" : ""))));
   const books = aClients().filter(c => c.type !== "va"), va = aClients().filter(c => c.type === "va");
   if (books.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Bookkeeping clients" }), el("small", { text: "classify daily · reconcile · send financials" }))); for (const c of books) s.append(absBooks(c, p)); main.append(s); }
-  if (va.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Assistant clients" }), el("small", { text: "reach out · do the job · invoice" }))); for (const c of va) s.append(absVa(c, p)); main.append(s); }
+  if (va.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Assistant clients" }), el("small", { text: "reach out · do the job · invoice" }))); for (const c of va) s.append(absVa(c, vaActive(c))); main.append(s); }
   const wk = aAll().filter(c => !c.inactive && c.type === "weekly");
   if (wk.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Weekly meetings" }))); for (const c of wk) s.append(absWeekly(c)); main.append(s); }
   const ina = aAll().filter(c => c.inactive);
@@ -606,11 +612,11 @@ function absVa(c, p) {
   const r = aRec(c, p), di = dueInfo(absDue(c, p)), save = f => put("awork", { ...aRec(c, p), ...f });
   if (notYet(c, p)) return el("div", { class: "acard" }, absHead(c), notYet(c, p), clientSettings(c));
   return el("div", { class: "acard" },
-    absHead(c, aDone(c, p) ? stepChip("Invoiced", "s5") : di ? el("span", { class: "chip " + di.cls, text: di.label }) : null),
-    el("div", { class: "subhead", text: mLabel(p) + " job" }),
+    absHead(c, aDone(c, p) ? stepChip("Invoiced", "s5") : r.step === 3 ? stepChip("Send invoice", "s4") : r.step === 0 && todayStr() < ymd(addDays(parseYmd(vaReach(p)), -2)) ? el("span", { class: "chip", text: "Reach out " + fmtDay(vaReach(p)) }) : di ? el("span", { class: "chip " + di.cls, text: di.label }) : null),
+    el("div", { class: "subhead", text: mLabel(p) + " job · reach out " + fmtDay(vaReach(p)) + " · due " + fmtDay(vaDue(p)) }),
     stepper(A_VA, r.step, i => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); if (i === 4) f.invoiced = todayStr(); save(f); render(true); }, r),
     r.step === 3 ? el("div", { class: "alert over" }, el("span", { class: "a-text", text: "Job's done. Send the invoice." })) : null,
-    field("What's the job?", textInput("aj-" + c.id + p, r.note, v => save({ note: v }), "e.g. Print tracker invoices")),
+    field("What's the job?", textInput("aj-" + c.id + p, r.note || aRec(c, addM(p, -1)).note || "", v => save({ note: v }), "e.g. Print tracker invoices")),
     field("Blocker", textInput("ab-" + c.id + p, r.blocker, v => save({ blocker: v }), "")),
     clientSettings(c));
 }
