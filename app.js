@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -635,7 +635,9 @@ function clientSettings(c) {
 }
 /* ---------- CRM follow-ups ---------- */
 const CRM_SKIP = /stalled|inactive|on hold/i;
-const crmLive = () => (SERVER.crm || []).filter(r => !CRM_SKIP.test(r.status));
+const crmSkipped = () => { try { return JSON.parse(setting("crmSkip", "[]")) || []; } catch (_) { return []; } };
+const crmSetSkip = (r, on) => { const l = crmSkipped().filter(x => x !== r.company); if (on) l.push(r.company); put("settings", { id: "crmSkip", value: JSON.stringify(l) }); };
+const crmLive = () => { const sk = crmSkipped(); return (SERVER.crm || []).filter(r => !CRM_SKIP.test(r.status) && !sk.includes(r.company)); };
 const crmDue = () => crmLive().filter(r => r.next && r.next <= todayStr()).sort((a, b) => a.next < b.next ? -1 : a.next > b.next ? 1 : a.row - b.row);
 const crmNew = () => crmLive().filter(r => !r.last && !r.next).sort((a, b) => a.row - b.row);
 const crmToday = () => [...crmDue(), ...crmNew().slice(0, Number(setting("crmNewPerDay", 3)) || 0)];
@@ -650,17 +652,31 @@ function crmAudience(r) {
   if (/rental|owner statement|trust|propert/i.test(sv)) return ["property managers", "I can take owner statements, reconciliations and back-office paperwork off your plate."];
   return ["contractors and small businesses", "I can get QuickBooks cleaned up and keep it that way, so you're not buried in receipts at tax time."];
 }
-function crmWhere(r) { const h = r.how || ""; return /konecki/i.test(h) ? " at the Konecki lunch" : /cheers/i.test(h) ? " at Cheers" : /red'?s/i.test(h) ? " at Red's" : /whitey/i.test(h) ? " at Whitey's" : ""; }
+function crmWhere(r) { const h = r.how || ""; return /konecki/i.test(h) ? " at the Konecki lunch" : /cheers/i.test(h) ? " at Cheers" : /red'?s/i.test(h) ? " at Red's" : /whitey/i.test(h) ? " at Whitey's" : /networking/i.test(h) ? " at the networking event" : ""; }
+function crmMetDate(r) { const m = String(r.how || "").match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{1,2}),? (\d{4})/); if (!m) return ""; const d = new Date(m[1] + " " + m[2] + ", " + m[3]); return isNaN(d) ? "" : ymd(d); }
+function crmHelp(r) {
+  const sv = (r.service || "") + " " + (r.notes || "");
+  if (/referral partner|lender|investor|CFO/i.test(sv)) return ["", "I'd love to grab coffee and talk about how we can send work each other's way."];
+  if (/personal/i.test(sv)) return [" to see if you'd still like help with your personal bookkeeping", ""];
+  if (/mortgage/i.test(sv)) return [" about getting your mortgages set up right in QuickBooks", ""];
+  return ["", ""];
+}
 function crmDraft(r) {
-  const f = crmFirst(r), hi = f ? "Hi " + f + "," : "Hi there,", svc0 = r.service || "bookkeeping", svc = /^[A-Z][a-z]/.test(svc0) ? svc0[0].toLowerCase() + svc0.slice(1) : svc0;
+  const f = crmFirst(r), hi = f ? "Hi " + f + "," : "Hi there,", svc0 = (r.service || "bookkeeping").replace(/\bQBO\b/g, "QuickBooks").replace(/ & /g, " and ").replace(/\s*\(.*?\)/g, "").replace(/\s*\/.*$/, ""), svc = /^[A-Z][a-z]/.test(svc0) && !/^QuickBooks/.test(svc0) ? svc0[0].toLowerCase() + svc0.slice(1) : svc0;
   const sig = "\n\nThanks,\nJodi Smith\nAbsolute Bookkeeping & Virtual Assistant", [aud, pitch] = crmAudience(r);
   const when = r.last ? " from " + shortDate(parseYmd(r.last)) : "";
   if (!r.last) return { text: hi + " this is Jodi with Absolute Bookkeeping in Orange Park. I help " + aud + " with " + svc + ". Would you be open to a quick call this week?",
     subject: "Bookkeeping help for " + r.company, email: hi + "\n\nMy name is Jodi Smith with Absolute Bookkeeping in Orange Park. I work with " + aud + " and help with " + svc + ". " + pitch + "\n\nWould you be open to a quick 10-minute call this week or next?" + sig };
   if (/Currently Working/i.test(r.category)) return { text: hi + " just checking in. Anything you need from me this week?", subject: "Checking in", email: hi + "\n\nJust checking in. Is there anything you need from me this week?" + sig };
   if (/Past Client/i.test(r.category)) return { text: hi + " it's Jodi with Absolute Bookkeeping. Hope you're doing well! Tax season is coming up. If you'd like help getting things ready, I'd be glad to help.", subject: "Getting ready for tax season", email: hi + "\n\nHope you're doing well! Tax season is coming up, and if you'd like help getting your books ready, I'd be glad to help." + sig };
-  if (/Met in Person/i.test(r.category) || /hot|warm/i.test(r.status)) return { text: hi + " it's Jodi with Absolute Bookkeeping. It was great meeting you" + crmWhere(r) + ". I'd love to grab coffee or set up a quick call this week. What works for you?",
-    subject: "Great meeting you", email: hi + "\n\nIt was great meeting you" + crmWhere(r) + ". I'd love to grab coffee or set up a quick call this week to hear more about what you're working on. What works for you?" + sig };
+  const met = crmMetDate(r), fresh = /Met in Person/i.test(r.category) && met && r.last && r.last <= ymd(addDays(parseYmd(met), 3));
+  const [about, partner] = crmHelp(r), ask = partner || "Do you have time for a quick call or coffee this week?";
+  if (/Met in Person/i.test(r.category) && !fresh) return { text: hi + " it's Jodi with Absolute Bookkeeping. Just checking back in" + about + ". " + ask,
+    subject: "Checking back in", email: hi + "\n\nJust checking back in" + about + ". " + ask + sig };
+  if (/hot|warm/i.test(r.status) && !/Met in Person/i.test(r.category)) return { text: hi + " it's Jodi with Absolute Bookkeeping. Following up on our conversation" + when + ". I'm happy to answer any questions by phone or email, whatever's easiest. When's a good time?",
+    subject: "Following up: " + r.company, email: hi + "\n\nFollowing up on our conversation" + when + ". I'm happy to answer any questions by phone or email, whatever's easiest. When's a good time for you?" + sig };
+  if (/Met in Person/i.test(r.category)) return { text: hi + " it's Jodi with Absolute Bookkeeping. It was great meeting you" + crmWhere(r) + ". " + (partner || "I'd love to grab coffee or set up a quick call this week. What works for you?"),
+    subject: "Great meeting you", email: hi + "\n\nIt was great meeting you" + crmWhere(r) + ". " + (partner || "I'd love to grab coffee or set up a quick call this week to hear more about what you're working on. What works for you?") + sig };
   return { text: hi + " it's Jodi with Absolute Bookkeeping. Just following up on my message" + when + ". If " + svc + " is something you could use help with, I'm happy to take a free 10-minute look at your QuickBooks. No pressure either way!",
     subject: "Following up: " + r.company, email: hi + "\n\nJust following up on my message" + when + ". If " + svc + " is something you could use help with, I'm happy to take a free 10-minute look at your QuickBooks. No pressure either way." + sig };
 }
@@ -695,12 +711,14 @@ function crmDetail(r) {
   return el("div", { class: "detail-card" },
     el("div", { class: "vr-s", text: [r.service, r.status, r.how].filter(Boolean).join(" · ") }),
     r.notes ? el("div", { class: "crm-notes", text: r.notes }) : null,
+    !r.phone && !r.email ? el("div", { class: "hint", text: "No phone or email in your CRM for them yet. Add one in the CRM sheet, or copy the message and send it however you reach them." }) : null,
     el("div", { class: "subhead", text: useEmail ? "Ready-to-send email" : "Ready-to-send text" }), swap, ta,
     useEmail ? el("div", { class: "vr-s", text: "Subject: " + d.subject }) : null, send,
     el("div", { class: "subhead", text: "Log what happened" }), note, outcomes,
     el("div", { class: "subhead", text: "Next follow-up" }), quick, field("Or pick a date", nx),
     hist ? el("details", { class: "mini" }, el("summary", { text: "History" }), el("div", { class: "crm-notes", text: hist })) : null,
-    el("div", { class: "vr-s", text: "Last contact: " + (r.last ? fmtDay(r.last) : "never") }));
+    el("div", { class: "vr-s", text: "Last contact: " + (r.last ? fmtDay(r.last) : "never") }),
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "link", text: "Don't follow up with them", onclick: () => { crmSetSkip(r, true); setStatus(r.company + " won't show in follow-ups. Undo under \"Skipped\" in the CRM card."); render(true); } })));
 }
 function crmList(list, empty) {
   const ul = el("ul", { class: "crm" });
@@ -735,8 +753,13 @@ function crmCard() {
   if (!config) { c.append(el("div", { class: "hint", text: "Your CRM shows here once the app is connected to your Sheet." })); return c; }
   if (!S.crmFilter || S.crmFilter === "due") S.crmFilter = "today";
   const chip = (key, label) => el("button", { type: "button", "aria-pressed": S.crmFilter === key ? "true" : "false", text: label, onclick: () => { S.crmFilter = key; render(true); } });
-  c.append(el("div", { class: "filters" }, chip("today", "Today (" + today.length + ")"), chip("new", "Never contacted (" + crmNew().length + ")"),
+  c.append(el("div", { class: "filters" }, chip("today", "Today (" + today.length + ")"), chip("new", "Never contacted (" + crmNew().length + ")"), crmSkipped().length ? chip("skipped", "Skipped (" + crmSkipped().length + ")") : null,
     ...Object.entries(stats).sort((a, b) => b[1] - a[1]).map(([s, n]) => chip(s, s + " (" + n + ")"))));
+  if (S.crmFilter === "skipped") {
+    const ul = el("ul", { class: "entries" });
+    for (const r of rows.filter(r => crmSkipped().includes(r.company))) ul.append(el("li", {}, el("span", {}, el("b", { text: r.company }), el("div", { class: "vr-s", text: r.contact || "" })), el("button", { type: "button", class: "link", text: "Follow up again", onclick: () => { crmSetSkip(r, false); render(true); } })));
+    c.append(ul); return c;
+  }
   const list = S.crmFilter === "today" ? today : S.crmFilter === "new" ? crmNew() : rows.filter(r => (r.status || "No status") === S.crmFilter);
   const per = el("select", { id: "crm-per" }, ...[0, 1, 2, 3, 5, 10].map(n => el("option", { value: String(n), text: n + " new a day" }))); per.value = String(setting("crmNewPerDay", 3));
   per.addEventListener("change", () => { put("settings", { id: "crmNewPerDay", value: per.value }); render(true); });
