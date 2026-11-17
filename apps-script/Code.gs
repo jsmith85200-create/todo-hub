@@ -75,7 +75,7 @@ function doGet(e) {
   if (p.ping) return out_({ ok: true, ping: true });
   const data = {};
   Object.keys(KINDS).forEach(function (k) { data[k] = readAll_(k); });
-  const res = { ok: true, now: new Date().toISOString(), data: data, crm: [], wl: [] };
+  const res = { ok: true, ver: 4, now: new Date().toISOString(), data: data, crm: [], wl: [] };
   try { res.crm = readCrm_(); } catch (err) { res.crmError = String(err.message || err); }
   try { res.wl = readWorkLocator_(); } catch (err) { res.wlError = String(err.message || err); }
   return out_(res);
@@ -89,12 +89,14 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const byKind = {}, crm = [];
+    const byKind = {}, crm = [], crmAdd = [];
     (body.changes || []).forEach(function (c) {
-      if (c && c.kind === "crm" && c.rec) crm.push(c.rec);
+      if (c && c.kind === "crmadd" && c.rec) crmAdd.push(c.rec);
+      else if (c && c.kind === "crm" && c.rec) crm.push(c.rec);
       else if (c && KINDS[c.kind] && c.rec && c.rec.id) (byKind[c.kind] = byKind[c.kind] || []).push(c.rec);
     });
     let applied = 0;
+    if (crmAdd.length) applied += addCrm_(crmAdd);
     if (crm.length) applied += writeCrm_(crm);
     Object.keys(byKind).forEach(function (kind) {
       const sh = sheetFor_(kind), h = headers_(sh, kind);
@@ -154,6 +156,24 @@ function writeCrm_(list) {
     }
     if (i < 0) return;
     sh.getRange(i + 9, 8, 1, 3).setValues([[c.last || "", c.next || "", c.status || ""]]);
+    done++;
+  });
+  return done;
+}
+
+// New contacts from the app go on the next empty row (columns B-L). A contact already there is never added twice.
+function addCrm_(list) {
+  const sh = crmSheet_();
+  let last = sh.getLastRow();
+  const n = Math.max(last - 8, 0), vals = n ? sh.getRange(9, 2, n, 2).getDisplayValues() : [];
+  while (last > 8 && !vals[last - 9][0] && !vals[last - 9][1]) last--;
+  let done = 0;
+  list.forEach(function (c) {
+    if (!c.contact && !c.company) return;
+    for (let j = 0; j < vals.length; j++) if (vals[j][0] === (c.contact || "") && vals[j][1] === (c.company || "")) return;
+    last++;
+    sh.getRange(last, 2, 1, 11).setValues([[c.contact || "", c.company || "", c.category || "", c.phone || "", c.email || "", c.service || "", c.last || "", c.next || "", c.status || "", c.notes || "", c.how || ""]]);
+    vals[last - 9] = [c.contact || "", c.company || ""];
     done++;
   });
   return done;

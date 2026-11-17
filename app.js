@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.6";
+const APP_VERSION = "2.3.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -110,7 +110,9 @@ async function sync() {
         if (!local || (remote.updatedAt || "") >= (local.updatedAt || "")) DB[k].set(remote.id, remote);
       }
     }
-    SERVER = { crm: got.crm || [], wl: got.wl || [], crmError: got.crmError || "", wlError: got.wlError || "" };
+    SERVER = { crm: got.crm || [], wl: got.wl || [], crmError: got.crmError || "", wlError: got.wlError || "", ver: Number(got.ver) || 0 };
+    LS.set("hub:server", SERVER);
+    for (const v of Object.values(queue)) if (v.kind === "crmadd" && !SERVER.crm.some(x => x.contact === v.rec.contact && x.company === v.rec.company)) SERVER.crm.push({ ...v.rec, row: 0 });
     for (const v of Object.values(queue)) if (v.kind === "crm") { const r = SERVER.crm.find(x => x.row == v.rec.row); if (r) Object.assign(r, { last: v.rec.last, next: v.rec.next, status: v.rec.status }); }
     lastSync = nowIso(); LS.set("hub:lastSync", lastSync);
     syncState.error = ""; saveLocal();
@@ -679,7 +681,7 @@ function crmAudience(r) {
   if (/rental|owner statement|trust|propert/i.test(sv)) return ["property managers", "I can take owner statements, reconciliations and back-office paperwork off your plate."];
   return ["contractors and small businesses", "I can get QuickBooks cleaned up and keep it that way, so you're not buried in receipts at tax time."];
 }
-function crmWhere(r) { const h = r.how || ""; return /konecki/i.test(h) ? " at the Konecki lunch" : /cheers/i.test(h) ? " at Cheers" : /red'?s/i.test(h) ? " at Red's" : /whitey/i.test(h) ? " at Whitey's" : /networking/i.test(h) ? " at the networking event" : ""; }
+function crmWhere(r) { const h = r.how || ""; return /konecki/i.test(h) ? " at the Konecki lunch" : /cheers/i.test(h) ? " at Cheers" : /red'?s/i.test(h) ? " at Red's" : /whitey/i.test(h) ? " at Whitey's" : /reia/i.test(h) ? " at the JaxREIA meetup" : /networking/i.test(h) ? " at the networking event" : ""; }
 function crmMetDate(r) { const m = String(r.how || "").match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? (\d{1,2}),? (\d{4})/); if (!m) return ""; const d = new Date(m[1] + " " + m[2] + ", " + m[3]); return isNaN(d) ? "" : ymd(d); }
 function crmHelp(r) {
   const sv = (r.service || "") + " " + (r.notes || "");
@@ -781,6 +783,32 @@ function crmTodayCard() {
   c.append(el("div", { class: "hint small", text: "Tap a name for a ready-to-send message. Logging it updates Last Contact, Next Follow-Up and Status in your CRM sheet." }));
   return c;
 }
+const CRM_CATS = [["Met in Person", "Warm / Reconnect"], ["Cold Emailed / Outreach", "Cold Outreach"], ["Currently Working With", "Active / Current"], ["Past Client - Inactive", "Stalled / Inactive"]];
+function crmAddForm() {
+  const det = el("details", { class: "mini" }, el("summary", { text: "+ Add a contact" }));
+  if (S.crmAdding) det.open = true;
+  det.addEventListener("toggle", () => { S.crmAdding = det.open; });
+  if ((SERVER.ver || 0) < 4) {
+    det.append(el("div", { class: "hint", text: "One quick step first: update your sync script so the app can add rows to your CRM. Open Sync settings for the steps." }));
+    return det;
+  }
+  const f = {}, inp = (k, label, type, ph) => { f[k] = el("input", { type: type || "text", id: "ca-" + k, placeholder: ph || "" }); return field(label, f[k]); };
+  const cat = el("select", { id: "ca-cat" }, ...CRM_CATS.map(([c]) => el("option", { value: c, text: c })));
+  const nx = el("input", { type: "date", id: "ca-next" }); { const x = addDays(new Date(), 2); while (x.getDay() === 0 || x.getDay() === 6) x.setDate(x.getDate() + 1); nx.value = ymd(x); }
+  const met = el("input", { type: "date", id: "ca-last" }); met.value = todayStr();
+  const notes = el("textarea", { id: "ca-notes", rows: "3", placeholder: "What you talked about" });
+  const add = () => {
+    const rec = { id: "crmadd:" + newId(), contact: f.contact.value.trim(), company: f.company.value.trim(), category: cat.value, phone: f.phone.value.trim(), email: f.email.value.trim(), service: f.service.value.trim(), last: met.value, next: nx.value, status: (CRM_CATS.find(x => x[0] === cat.value) || [, ""])[1], notes: notes.value.trim(), how: f.how.value.trim() };
+    if (!rec.contact && !rec.company) { setStatus("Add at least a name or a company."); return; }
+    queue["crmadd:" + rec.id] = { kind: "crmadd", rec }; SERVER.crm.push({ ...rec, row: 0 }); saveLocal(); scheduleSync(800);
+    S.crmAdding = false; setStatus((rec.contact || rec.company) + " added to your CRM."); render(true);
+  };
+  det.append(inp("contact", "Name"), inp("company", "Company"), field("Category", cat), inp("phone", "Phone", "tel"), inp("email", "Email", "email"),
+    inp("service", "What they might need", "text", "e.g. Monthly bookkeeping"), inp("how", "How you met", "text", "e.g. JaxREIA meetup, Nov 16"),
+    field("Notes", notes), field("Met / last talked", met), field("Next follow-up", nx),
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add to CRM", onclick: add })));
+  return det;
+}
 function crmCard() {
   const rows = SERVER.crm || [];
   const stats = {}; for (const r of rows) { const s = r.status || "No status"; stats[s] = (stats[s] || 0) + 1; }
@@ -800,7 +828,7 @@ function crmCard() {
   const list = S.crmFilter === "today" ? today : S.crmFilter === "new" ? crmNew() : rows.filter(r => (r.status || "No status") === S.crmFilter);
   const per = el("select", { id: "crm-per" }, ...[0, 1, 2, 3, 5, 10].map(n => el("option", { value: String(n), text: n + " new a day" }))); per.value = String(setting("crmNewPerDay", 3));
   per.addEventListener("change", () => { put("settings", { id: "crmNewPerDay", value: per.value }); render(true); });
-  c.append(crmList(list, S.crmFilter === "today" ? "No follow-ups due today." : "Nobody in this group."), field("New prospects to add to Today", per));
+  c.append(crmList(list, S.crmFilter === "today" ? "No follow-ups due today." : "Nobody in this group."), field("New prospects to add to Today", per), crmAddForm());
   return c;
 }
 function socialCard() {
@@ -1014,6 +1042,15 @@ function renderSettings(main) {
     catch (e) { msg.textContent = "Couldn't reach that link. Check you deployed it with access for \"Anyone\"."; return; }
     config = { url: u, token: t }; LS.set("hub:config", config); msg.textContent = "Connected. Syncing now…"; await sync(); go("home");
   };
+  if (config && (SERVER.ver || 0) < 4) {
+    const ol = el("ol", { class: "steps" }, ...[
+      ["Open your ", el("a", { href: "https://docs.google.com/document/d/18KydzEAnMZ4FKWNlJSdKJ8lDUWZ3FLGfNLTTHFzWqdo/edit", target: "_blank", rel: "noopener", text: "Sync Script v4 doc" }), " and copy everything (Ctrl+A, then Ctrl+C)."],
+      ["Open your ", el("a", { href: "https://docs.google.com/spreadsheets/d/1ijxZB4QUql-5bSn6a7EgyrHvSyHa24yeU-eLcOO0TO4/edit", target: "_blank", rel: "noopener", text: "To-Do Hub Data Sheet" }), " and click Extensions → Apps Script."],
+      ["Click in the code, press Ctrl+A, paste (Ctrl+V), then click the save icon."],
+      ["Click Deploy → Manage deployments → the pencil (Edit) → Version: New version → Deploy. Your link and sync code stay the same."],
+      ["Come back here and refresh. This box disappears when it worked."]].map(parts => el("li", {}, ...parts)));
+    main.append(card("Update your sync script", "about 2 minutes", el("div", { class: "hint", text: "This lets you add contacts to your CRM from the app." }), ol));
+  }
   main.append(card("Connect your Google Sheet", "", el("div", { class: "hint", text: "Paste the web app link and the sync code. You only do this once per device." }),
     field("Web app link", url), field("Sync code", tok), el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Save and connect", onclick: save })), msg));
   if (config) {
