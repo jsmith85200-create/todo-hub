@@ -221,3 +221,5 @@ details.mini summary{font-size:15px}
 .qa{background:var(--card);border:3px solid var(--accent);border-radius:14px;padding:14px;margin-top:14px;display:grid;gap:10px}
 .qa-h{display:flex;justify-content:space-between;gap:10px;align-items:center}.qa-h .seg{margin:0;flex:1}
 body{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}
+.linkbtn{display:inline-flex;align-items:center;text-decoration:none;flex:1 1 150px;justify-content:center}
+.atile .chip{white-space:normal;max-width:100%}

@@ -3,10 +3,10 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
-const BOOL = new Set(["done", "star", "void", "manual"]);
-const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee"]);
+const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
+const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
 
 const TABS = [["home", "Home"], ["tpam", "TPAM"], ["vicki", "Vicki's"], ["absolute", "Absolute"], ["personal", "Personal"]];
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -239,12 +239,16 @@ function alerts() {
       if (!w || w.step < 1) out.push({ job: "absolute", cls: "over", text: "Reach out to " + c.name + " for " + mLabel(pm) + "'s job", go: "absolute" });
     }
   }
-  const tdue = tpamDue(pm), ts = tpamStats(pm);
-  if (ts.board < ts.n) { const di = dueInfo(tdue); if (di && di.diff <= 5) out.push({ job: "tpam", cls: di.cls || "today", text: "TPAM " + mLabel(pm) + " financials: " + (ts.n - ts.board) + " not sent to board · " + di.label.toLowerCase(), go: "tpam" }); }
+  for (const a of assocs()) {
+    const r = tpamRec(pm, a.code), dl = tpamDeadline(pm, a, r); if (!dl) continue;
+    const d = r.step <= 1 ? toCamBy(pm, a) : tpamDue(pm), di = dueInfo(d);
+    if (r.step === 3 || (di && di.diff <= 2)) out.push({ job: "tpam", cls: dl.cls || "today", text: a.code + ": " + dl.label, go: "tpam" });
+  }
   for (const c of live("aclients")) {
     const months = absOpenMonths(c), cur = months[months.length - 1];
     if (cur) { const di = dueInfo(absDue(c, cur)); if (di && di.diff <= 3) out.push({ job: "absolute", cls: di.cls || "today", text: c.name + " " + mLabel(cur) + ": " + di.label.toLowerCase(), go: "absolute" }); }
   }
+  for (const c of aAll()) if (!c.inactive && c.type === "weekly" && c.nextDate && c.nextDate <= todayStr()) out.push({ job: "absolute", cls: c.nextDate < todayStr() ? "over" : "today", text: "Meeting with " + c.name + (c.nextDate < todayStr() ? " was " + fmtDay(c.nextDate) + ". Set the next one." : " today"), go: "absolute" });
   const crmDue = SERVER.crm.filter(r => r.next && r.next <= todayStr() && !/stalled|inactive|on hold/i.test(r.status)).length;
   if (crmDue) out.push({ job: "absolute", cls: "today", text: crmDue + " CRM follow-up" + (crmDue > 1 ? "s" : "") + " due", go: "absolute" });
   for (const p of live("social")) if (p.status !== "posted" && p.date && p.date <= todayStr()) out.push({ job: "absolute", cls: p.date < todayStr() ? "over" : "today", text: "Post: " + p.title, go: "absolute" });
@@ -309,7 +313,15 @@ async function notifyIfNew(force) {
 /* ================= TPAM ================= */
 const assocs = () => live("assoc").sort((a, b) => (a.order - b.order) || a.code.localeCompare(b.code));
 function tpamRec(p, code) { return DB.tpam.get(p + "-" + code) || { id: p + "-" + code, period: p, code, step: 0, blocker: "", note: "" }; }
-function tpamDue(p) { return setting("tpamdue-" + p, ""); }
+function tpamDue(p) { return setting("tpamdue-" + p, ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), 15))); }
+function bizBack(dateStr, n) { const d = parseYmd(dateStr); let k = 0; while (k < n) { d.setDate(d.getDate() - 1); if (d.getDay() !== 0 && d.getDay() !== 6) k++; } return ymd(d); }
+const camDays = a => a.camDays || 2;
+function toCamBy(p, a) { return bizBack(tpamDue(p), camDays(a)); }
+function tpamDeadline(p, a, r) {
+  if (r.step >= 5) return null;
+  if (r.step <= 1) { const d = toCamBy(p, a), di = dueInfo(d); return di && { cls: di.cls, label: (di.diff < 0 ? "Late to CAM " : "To CAM by ") + shortDate(parseYmd(d)) }; }
+  const di = dueInfo(tpamDue(p)); return di && { cls: r.step === 3 ? "over" : di.cls, label: (r.step === 3 ? "Fix · " : "") + "Board " + (di.diff < 0 ? "late " : "due ") + shortDate(parseYmd(tpamDue(p))) };
+}
 function tpamStats(p) {
   const as = assocs(), n = as.length; let sum = 0, board = 0, blockers = 0;
   for (const a of as) { const r = tpamRec(p, a.code); sum += r.step; if (r.step >= 5) board++; if (r.blocker && r.step < 5) blockers++; }
@@ -324,13 +336,14 @@ function renderTpam(main) {
   main.append(el("section", { class: "card" },
     bigPct(st.pct, st.board + " of " + st.n + " sent to board" + (st.blockers ? " · " + st.blockers + " blocked" : ""),
       el("div", { class: "chips" }, ...counts.map(([s, n, c]) => stepChip(n + " " + s, c)))),
-    el("div", { class: "duerow" }, field("Deadline for " + mLabel(p), dueIn), !due ? el("span", { class: "hint small", text: "Set the date these are due." }) : di && st.board < st.n ? el("span", { class: "chip " + di.cls, text: di.label }) : st.board === st.n && st.n ? el("span", { class: "chip step s5", text: "All sent" }) : null)));
+    el("div", { class: "duerow" }, field("Due to boards", dueIn), el("span", { class: "hint small", text: "CAMs need 2 business days (4 for the big ones) before the 15th. Corrections take longer." }), di && st.board < st.n ? el("span", { class: "chip " + di.cls, text: di.label }) : st.board === st.n && st.n ? el("span", { class: "chip step s5", text: "All sent" }) : null)));
 
   const grid = el("div", { class: "agrid" });
   for (const a of assocs()) {
     const r = tpamRec(p, a.code), open = S.open.has("t:" + a.code);
     const tile = el("button", { type: "button", class: "atile " + T_CLS[r.step] + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("t:" + a.code) : S.open.add("t:" + a.code); render(true); } },
       el("span", { class: "at-code", text: a.code }), el("span", { class: "at-name", text: a.name }), stepChip(T_STEPS[r.step], T_CLS[r.step]),
+      (dl => dl ? el("span", { class: "chip " + dl.cls, text: dl.label }) : null)(tpamDeadline(p, a, r)),
       r.blocker && r.step < 5 ? el("span", { class: "at-blk", text: "⚠ " + r.blocker }) : null);
     grid.append(tile);
     if (open) grid.append(tpamDetail(p, a, r));
@@ -350,6 +363,8 @@ function tpamDetail(p, a, r) {
     el("div", { class: "dc-h" }, el("b", { text: a.code + " · " + a.name }), el("span", { text: [a.bank, a.cam && "CAM " + a.cam].filter(Boolean).join(" · ") })),
     steps,
     el("div", { class: "hint small", text: "Tap the step it's at. The date is stamped for your Better Financial Checklist." }),
+    el("div", { class: "hint", text: "CAM review: " + camDays(a) + " business days · to the CAM by " + fmtDay(toCamBy(p, a)) + " · boards by " + fmtDay(tpamDue(p)) }),
+    r.step === 3 ? el("div", { class: "alert over" }, el("span", { class: "a-text", text: "Corrections take longer. Fix and resend as soon as you can." })) : null,
     field("Blocker (what it's waiting on)", textInput("tb-" + p + a.code, r.blocker, v => save({ blocker: v }), "e.g. Waiting on Jeff, missing $430")),
     field("Notes", textInput("tn-" + p + a.code, r.note, v => save({ note: v }), "")));
 }
@@ -359,7 +374,9 @@ function assocManager() {
   const ul = el("ul", { class: "entries" });
   for (const a of assocs()) {
     const conf = S.confirm === "a:" + a.id;
-    ul.append(el("li", {}, el("span", { text: a.code + " · " + a.name + (a.cam ? " · CAM " + a.cam : "") }),
+    const cd = el("select", { id: "cd-" + a.id, "aria-label": "CAM review days for " + a.code }, el("option", { value: "2", text: "2 business days" }), el("option", { value: "4", text: "4 business days (big)" })); cd.value = String(camDays(a));
+    cd.addEventListener("change", () => { put("assoc", { ...a, camDays: Number(cd.value) }); render(true); });
+    ul.append(el("li", {}, el("span", { text: a.code + " · " + a.name + (a.cam ? " · CAM " + a.cam : "") }), cd,
       el("button", { type: "button", class: "link", text: conf ? "Tap again to remove" : "Remove", onclick: () => { if (conf) { S.confirm = ""; put("assoc", { ...a, void: true }); } else S.confirm = "a:" + a.id; render(true); } })));
   }
   det.append(el("div", { class: "hint small", text: "Removing hides it from new months. Past months keep their history." }), ul);
@@ -391,7 +408,7 @@ function vCell(w, m) {
   if (w.start && m < w.start) return ["", "Not started yet"];
   if (!vDue(w, m)) return ["na", "Not due"];
   if (w.cthru && m <= w.cthru) return ["s5", "Complete"];
-  if (w.rthru && m <= w.rthru) { const s = V_STEPS.find(x => x[0] === w.step) || V_STEPS[0]; return [s[2], "Received · " + s[1]]; }
+  if (w.rthru && m <= w.rthru) { const s = V_STEPS.find(x => x[0] === w.vstep) || V_STEPS[0]; return [s[2], "Received · " + s[1]]; }
   return ["nr", "Not received"];
 }
 function vickiStats(m, svc) {
@@ -426,7 +443,7 @@ const vName = w => (DB.vclients.get(w.client) || {}).name || w.client;
 function vRow(w, m) {
   const c = DB.vclients.get(w.client), open = S.open.has("v:" + w.id), months = [];
   for (let i = 11; i >= 0; i--) months.push(addM(m, -i));
-  const working = w.rthru && (!w.cthru || w.cthru < w.rthru), stp = V_STEPS.find(x => x[0] === w.step) || V_STEPS[0];
+  const working = w.rthru && (!w.cthru || w.cthru < w.rthru), stp = V_STEPS.find(x => x[0] === w.vstep) || V_STEPS[0];
   const strip = el("div", { class: "strip", "aria-hidden": "true" }, ...months.map(x => { const [cls, t] = vCell(w, x); return el("i", { class: "cell " + cls + (x === m ? " cur" : ""), title: mLabel(x) + ": " + t }, el("small", { text: MONTHS[Number(x.slice(5)) - 1][0] })); }));
   const status = w.cthru ? "Complete through " + mShort(w.cthru) : "Nothing complete yet";
   const row = el("button", { type: "button", class: "vrow" + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("v:" + w.id) : S.open.add("v:" + w.id); render(true); } },
@@ -444,8 +461,8 @@ function vDetail(w, c) {
   const lastDue = p => { let x = p; for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, 1); return x; };
   const nextDue = p => lastDue(p ? addM(p, 1) : (w.start || prevMonth()));
   const steps = el("div", { class: "stepper" });
-  V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.step === k ? "on " : "") + cls, "aria-pressed": w.step === k ? "true" : "false", onclick: () => { save({ step: k }); render(true); } }, n)));
-  steps.append(el("button", { type: "button", class: "s5", onclick: () => { if (!w.rthru) { setStatus("Mark a month received first."); return; } save({ cthru: w.rthru, step: "" }); render(true); } }, "Printed & complete"));
+  V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.vstep === k ? "on " : "") + cls, "aria-pressed": w.vstep === k ? "true" : "false", onclick: () => { save({ vstep: k }); render(true); } }, n)));
+  steps.append(el("button", { type: "button", class: "s5", onclick: () => { if (!w.rthru) { setStatus("Mark a month received first."); return; } save({ cthru: w.rthru, vvstep: "" }); render(true); } }, "Printed & complete"));
   const mi = (id, v, f) => { const i = el("input", { type: "month", id }); i.value = v || ""; i.addEventListener("change", () => { save({ [f]: i.value }); render(true); }); return i; };
   const soft = el("select", { id: "vs-" + w.id }, ...V_SOFT.map(([k, n]) => el("option", { value: k, text: n }))); soft.value = c.software || "";
   soft.addEventListener("change", () => { put("vclients", { ...c, software: soft.value }); render(true); });
@@ -454,14 +471,21 @@ function vDetail(w, c) {
   const freq = el("select", { id: "vf-" + w.id }, el("option", { value: "m", text: "Monthly" }), el("option", { value: "q", text: "Quarterly" }), el("option", { value: "a", text: "Annual" })); freq.value = w.freq || "m";
   freq.addEventListener("change", () => { save({ freq: freq.value }); render(true); });
   const conf = S.confirm === "vr:" + w.id;
+  const links = el("div", { class: "btnrow" },
+    w.login ? el("a", { class: "btn linkbtn", href: w.login, target: "_blank", rel: "noopener", text: w.svc === "stax" ? "Login: cert / BP#" : "Login info" }) : null,
+    w.info ? el("a", { class: "btn ghost linkbtn", href: w.info, target: "_blank", rel: "noopener", text: w.svc === "stax" ? "Client tab (bank info)" : w.svc === "ptax" ? "Calculations" : "Client info" }) : null);
   return el("div", { class: "detail-card" },
+    links.childNodes.length ? links : null,
     el("div", { class: "btnrow" },
-      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => { save({ rthru: nextDue(w.rthru), step: w.rthru && w.cthru && w.cthru < w.rthru ? w.step : "" }); render(true); } }),
-      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); save({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, step: "" }); render(true); } })),
+      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => { save({ rthru: nextDue(w.rthru), vstep: w.rthru && w.cthru && w.cthru < w.rthru ? w.vstep : "" }); render(true); } }),
+      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); save({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vvstep: "" }); render(true); } })),
     el("div", { class: "subhead", text: "Step for the received work" }), steps,
     el("div", { class: "row2" }, field("Complete through", mi("vd-" + w.id, w.cthru, "cthru")), field("Received through", mi("vrc-" + w.id, w.rthru, "rthru")), field("Priority", pri), field("Software", soft), field("How often", freq), field("Started", mi("vst-" + w.id, w.start, "start"))),
     field("Blocker", textInput("vb-" + w.id, w.blocker, v => save({ blocker: v }), "e.g. Missing September statement")),
     field("Notes", textInput("vn-" + w.id, w.note, v => save({ note: v }), "")),
+    el("details", { class: "mini" }, el("summary", { text: "Change login / info links" }),
+      field("Login link (opens your Google Sheet)", textInput("vl-" + w.id, w.login, v => save({ login: v.trim() }), "https://docs.google.com/…")),
+      field("Client info link", textInput("vi-" + w.id, w.info, v => save({ info: v.trim() }), "https://docs.google.com/…"))),
     el("button", { type: "button", class: "link", text: conf ? "Tap again to take " + c.name + " off " + svcName(w.svc) : "Remove from " + svcName(w.svc), onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "vr:" + w.id; render(true); } }));
 }
 function workLocatorCard() {
@@ -477,7 +501,8 @@ function workLocatorCard() {
 }
 
 /* ================= ABSOLUTE ================= */
-const aClients = () => live("aclients").sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+const aAll = () => live("aclients").sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+const aClients = () => aAll().filter(c => !c.inactive && c.type !== "weekly");
 const aSteps = c => c.type === "va" ? A_VA : A_BOOKS;
 function aRec(c, p) { return DB.awork.get(c.id + "-" + p) || { id: c.id + "-" + p, client: c.id, period: p, step: 0, blocker: "", note: "", invoiced: "" }; }
 const aDone = (c, p) => aRec(c, p).step >= aSteps(c).length - 1;
@@ -496,6 +521,12 @@ function renderAbsolute(main) {
   const books = aClients().filter(c => c.type !== "va"), va = aClients().filter(c => c.type === "va");
   if (books.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Bookkeeping clients" }), el("small", { text: "classify daily · reconcile · send financials" }))); for (const c of books) s.append(absBooks(c, p)); main.append(s); }
   if (va.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Assistant clients" }), el("small", { text: "reach out · do the job · invoice" }))); for (const c of va) s.append(absVa(c, p)); main.append(s); }
+  const wk = aAll().filter(c => !c.inactive && c.type === "weekly");
+  if (wk.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Weekly meetings" }))); for (const c of wk) s.append(absWeekly(c)); main.append(s); }
+  const ina = aAll().filter(c => c.inactive);
+  if (ina.length) { const det = el("details", { class: "card" }, el("summary", { text: "Inactive clients (" + ina.length + ")" })); const ul = el("ul", { class: "entries" });
+    for (const c of ina) ul.append(el("li", {}, el("span", {}, el("b", { text: c.name }), c.services ? " · " + c.services : "", c.note ? el("div", { class: "vr-s", text: c.note }) : null), el("button", { type: "button", class: "link", text: "Make active", onclick: () => { put("aclients", { ...c, inactive: false }); render(true); } })));
+    det.append(ul); main.append(det); }
   main.append(crmCard());
   main.append(socialCard());
   main.append(todoSection("absolute"));
@@ -533,6 +564,16 @@ function absVa(c, p) {
     field("Blocker", textInput("ab-" + c.id + p, r.blocker, v => save({ blocker: v }), "")),
     clientSettings(c));
 }
+function absWeekly(c) {
+  const save = f => put("aclients", { ...DB.aclients.get(c.id), ...f });
+  const di = dueInfo(c.nextDate);
+  const nd = el("input", { type: "date", id: "wn-" + c.id }); nd.value = c.nextDate || ""; nd.addEventListener("change", () => { save({ nextDate: nd.value }); render(true); });
+  return el("div", { class: "acard" },
+    absHead(c, c.nextDate ? el("span", { class: "chip " + (di ? di.cls : ""), text: di && di.diff <= 1 ? di.label.replace("Due", "Meeting") : "Next: " + fmtDay(c.nextDate) }) : el("span", { class: "chip", text: "Set the next date" })),
+    el("div", { class: "row2" }, field("Next meeting", nd), el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Met · next week", onclick: () => { const base = c.nextDate && c.nextDate >= todayStr() ? parseYmd(c.nextDate) : new Date(); save({ lastMet: todayStr(), nextDate: ymd(addDays(base, 7)) }); render(true); } }))),
+    c.lastMet ? el("div", { class: "vr-s", text: "Last met " + fmtDay(c.lastMet) }) : null,
+    clientSettings(c));
+}
 function stepper(steps, cur, onPick, r) {
   const s = el("div", { class: "stepper" });
   steps.forEach((n, i) => s.append(el("button", { type: "button", class: (cur === i ? "on " : "") + (i === steps.length - 1 ? "s5" : i ? "s1" : "s0"), "aria-pressed": cur === i ? "true" : "false", onclick: () => onPick(i) }, n, r && r["d" + i] && i ? el("small", { text: shortDate(parseYmd(r["d" + i])) }) : null)));
@@ -550,7 +591,8 @@ function clientSettings(c) {
   det.append(field("What I do for them", textInput("acv-" + c.id, c.services, v => save({ services: v }), "")),
     el("div", { class: "row2" }, field(c.type === "va" ? "First month" : "First month due (cleanup start)", start), field("Due day of next month", due), field(c.type === "va" ? "Fee per job ($)" : "Monthly fee ($)", fee)),
     field("Ongoing blocker", textInput("acb-" + c.id, c.blocker, v => save({ blocker: v }), "")),
-    el("button", { type: "button", class: "link", text: conf ? "Tap again to archive " + c.name : "Archive client", onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "ac:" + c.id; render(true); } }));
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: "Mark inactive", onclick: () => { save({ inactive: true }); render(true); } }),
+      el("button", { type: "button", class: "link", text: conf ? "Tap again to archive " + c.name : "Archive client", onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "ac:" + c.id; render(true); } })));
   return det;
 }
 function crmCard() {
@@ -641,9 +683,10 @@ function quickAddPanel() {
       el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add task", onclick: add }), el("button", { type: "button", class: "btn ghost", text: "Done", onclick: close })));
   } else if (job === "tpam") {
     const code = el("input", { type: "text", id: "qa-first", placeholder: "e.g. BPC", maxlength: 10 }), name = el("input", { type: "text", id: "qa-name", maxlength: 80 }), bank = el("input", { type: "text", id: "qa-bank", maxlength: 40 }), cam = el("input", { type: "text", id: "qa-cam", maxlength: 40 });
-    box.append(el("div", { class: "row2" }, field("Code", code), field("Association name", name), field("Bank", bank), field("CAM", cam)),
+    const big = el("input", { type: "checkbox", id: "qa-big" });
+    box.append(el("div", { class: "row2" }, field("Code", code), field("Association name", name), field("Bank", bank), field("CAM", cam)), el("label", { class: "chk" }, big, " Big association (CAM needs 4 business days)"),
       el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add association", onclick: () => { const c = code.value.trim().toUpperCase(); if (!c || !name.value.trim()) { setStatus("Add a code and a name."); return; }
-        put("assoc", { id: c, code: c, name: name.value.trim(), bank: bank.value.trim(), cam: cam.value.trim(), order: assocs().length + 1, void: false }); setStatus("Added " + c + "."); S.qa = null; go("tpam"); } })));
+        put("assoc", { id: c, code: c, name: name.value.trim(), bank: bank.value.trim(), cam: cam.value.trim(), camDays: big.checked ? 4 : 2, order: assocs().length + 1, void: false }); setStatus("Added " + c + "."); S.qa = null; go("tpam"); } })));
   } else if (job === "vicki") {
     const existing = live("vclients").sort((a, b) => a.name.localeCompare(b.name));
     const pick = el("select", { id: "qa-pick" }, el("option", { value: "", text: "New client…" }), ...existing.map(c => el("option", { value: c.id, text: c.name })));
@@ -658,12 +701,12 @@ function quickAddPanel() {
         let cid = pick.value;
         if (!cid) { const n = name.value.trim(); if (!n) { setStatus("Type the client's name."); return; } cid = "c" + newId(); put("vclients", { id: cid, name: n, software: soft.value, void: false }); }
         let any = false;
-        for (const [k, cb] of boxes) if (cb.checked) { any = true; const id = k + "-" + cid, ex = DB.vwork.get(id); put("vwork", ex ? { ...ex, void: false } : { id, client: cid, svc: k, freq: "m", start: recv.value || "", cthru: "", rthru: recv.value || "", step: "", priority: Number(pri.value), blocker: "", note: "", void: false }); }
+        for (const [k, cb] of boxes) if (cb.checked) { any = true; const id = k + "-" + cid, ex = DB.vwork.get(id); put("vwork", ex ? { ...ex, void: false } : { id, client: cid, svc: k, freq: "m", start: recv.value || "", cthru: "", rthru: recv.value || "", vvstep: "", priority: Number(pri.value), blocker: "", note: "", void: false }); }
         if (!any) { setStatus("Pick at least one service."); return; }
         setStatus("Added."); S.qa = null; go("vicki"); } })));
   } else {
     const name = el("input", { type: "text", id: "qa-first", maxlength: 80 });
-    const type = el("select", { id: "qa-type" }, el("option", { value: "books", text: "Monthly bookkeeping" }), el("option", { value: "va", text: "Assistant / per job" }));
+    const type = el("select", { id: "qa-type" }, el("option", { value: "books", text: "Monthly bookkeeping" }), el("option", { value: "va", text: "Assistant / per job" }), el("option", { value: "weekly", text: "Weekly meetings" }));
     const svc = el("input", { type: "text", id: "qa-svc", maxlength: 120, placeholder: "e.g. Monthly bookkeeping, payroll records" });
     const fee = el("input", { type: "number", id: "qa-fee", min: "0", inputmode: "decimal" });
     const start = el("input", { type: "month", id: "qa-start" }); start.value = prevMonth();
