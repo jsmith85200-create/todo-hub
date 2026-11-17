@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.5";
+const APP_VERSION = "2.2.6";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -688,7 +688,14 @@ function crmHelp(r) {
   if (/mortgage/i.test(sv)) return [" about getting your mortgages set up right in QuickBooks", ""];
   return ["", ""];
 }
+const crmCustom = () => { try { return JSON.parse(setting("crmMsg", "{}")) || {}; } catch (_) { return {}; } };
+function crmSetCustom(r, text) { const m = crmCustom(); if (text) m[r.company] = text; else delete m[r.company]; put("settings", { id: "crmMsg", value: JSON.stringify(m) }); }
 function crmDraft(r) {
+  const own = crmCustom()[r.company];
+  if (own) { const sig = "\n\nThanks,\nJodi Smith\nAbsolute Bookkeeping & Virtual Assistant"; return { text: own, subject: "From Jodi at Absolute Bookkeeping", email: own + sig, custom: true }; }
+  return crmDraft0(r);
+}
+function crmDraft0(r) {
   const f = crmFirst(r), hi = f ? "Hi " + f + "," : "Hi there,", svc0 = (r.service || "bookkeeping").replace(/\bQBO\b/g, "QuickBooks").replace(/ & /g, " and ").replace(/\s*\(.*?\)/g, "").replace(/\s*\/.*$/, ""), svc = /^[A-Z][a-z]/.test(svc0) && !/^QuickBooks/.test(svc0) ? svc0[0].toLowerCase() + svc0.slice(1) : svc0;
   const sig = "\n\nThanks,\nJodi Smith\nAbsolute Bookkeeping & Virtual Assistant", [aud, pitch] = crmAudience(r);
   const when = r.last ? " from " + shortDate(parseYmd(r.last)) : "";
@@ -730,10 +737,10 @@ function crmDetail(r) {
   const outcomes = el("div", { class: "chips2" },
     ...[["Texted", { next: after(gap) }], ["Emailed", { next: after(gap) }], ["Called, no answer", { next: after(2) }],
       ["They replied", { next: after(3), status: "Warm / Reconnect" }], ["Meeting set", { status: "Hot Prospect" }], ["Not interested", { next: "", status: "Stalled / Inactive" }]]
-      .map(([t, f]) => el("button", { type: "button", class: "btn ghost small", text: t, onclick: () => log(t, t === "Meeting set" ? { ...f, next: nx.value || after(7) } : f) })));
+      .map(([t, f]) => el("button", { type: "button", class: "btn ghost small", text: t, onclick: () => { if (t === "Meeting set") { S.crmMeet = r.row; setStatus("Pick the meeting date below. It saves as soon as you pick it."); render(true); const n = document.getElementById("cn-" + r.row); if (n) { n.value = ""; n.focus(); } return; } log(t, t === "Meeting set" ? { ...f, next: nx.value } : f); } })));
   const quick = el("div", { class: "chips2" }, ...[["2 days", 2], ["1 week", 7], ["2 weeks", 14], ["1 month", 30], ["3 months", 90]].map(([t, n]) =>
     el("button", { type: "button", class: "btn ghost small", text: t, onclick: () => { crmPut(r, { next: after(n) }); setStatus("Next follow-up: " + fmtDay(after(n)) + "."); render(true); } })));
-  nx.addEventListener("change", () => { crmPut(r, { next: nx.value }); render(true); });
+  nx.addEventListener("change", () => { if (S.crmMeet === r.row && nx.value) { S.crmMeet = null; log("Meeting set", { status: "Hot Prospect", next: nx.value }); return; } crmPut(r, { next: nx.value }); render(true); });
   const hist = (DB.notes.get(crmLogId(r)) || {}).text || "";
   return el("div", { class: "detail-card" },
     el("div", { class: "vr-s", text: [r.service, r.status, r.how].filter(Boolean).join(" · ") }),
@@ -741,6 +748,9 @@ function crmDetail(r) {
     !r.phone && !r.email ? el("div", { class: "hint", text: "No phone or email in your CRM for them yet. Add one in the CRM sheet, or copy the message and send it however you reach them." }) : null,
     el("div", { class: "subhead", text: useEmail ? "Ready-to-send email" : "Ready-to-send text" }), swap, ta,
     useEmail ? el("div", { class: "vr-s", text: "Subject: " + d.subject }) : null, send,
+    el("div", { class: "seg2" },
+      el("button", { type: "button", class: "link", text: "Save as their message", onclick: () => { crmSetCustom(r, ta.value === d.email && !d.custom ? d.text : ta.value.replace(/\n\nThanks,\nJodi Smith[\s\S]*$/, "")); setStatus("Saved. " + (crmFirst(r) || r.company) + " will get this message from now on."); render(true); } }),
+      d.custom ? el("button", { type: "button", class: "link", text: "Go back to the standard message", onclick: () => { crmSetCustom(r, ""); render(true); } }) : null),
     el("div", { class: "subhead", text: "Log what happened" }), note, outcomes,
     el("div", { class: "subhead", text: "Next follow-up" }), quick, field("Or pick a date", nx),
     hist ? el("details", { class: "mini" }, el("summary", { text: "History" }), el("div", { class: "crm-notes", text: hist })) : null,
