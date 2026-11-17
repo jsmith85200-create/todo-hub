@@ -257,7 +257,7 @@ function alerts() {
 function allBlockers() {
   const out = [], pm = monthOf("tpam");
   for (const a of assocs()) { const r = tpamRec(pm, a.code); if (r.blocker && r.step < 5) out.push(["TPAM", a.code + " · " + r.blocker]); }
-  for (const w of live("vwork")) if (w.blocker && !vComplete(w)) { const c = DB.vclients.get(w.client); out.push(["Vicki's", (c ? c.name : w.client) + " (" + svcName(w.svc) + ") · " + w.blocker]); }
+  for (const w of live("vwork")) if (w.blocker && !(w.cthru && w.cthru >= monthOf("vicki"))) { const c = DB.vclients.get(w.client); out.push(["Vicki's", (c ? c.name : w.client) + " (" + svcName(w.svc) + ") · " + w.blocker]); }
   for (const c of live("aclients")) { if (c.blocker) out.push(["Absolute", c.name + " · " + c.blocker]); for (const p of absOpenMonths(c)) { const w = DB.awork.get(c.id + "-" + p); if (w && w.blocker) out.push(["Absolute", c.name + " " + mShort(p) + " · " + w.blocker]); } }
   return out;
 }
