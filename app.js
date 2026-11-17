@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.3";
+const APP_VERSION = "2.2.4";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -155,6 +155,7 @@ function el(tag, attrs, ...kids) {
   return n;
 }
 function setStatus(t) { $("#status").textContent = t; }
+function undoStatus(t, fn) { const st = $("#status"); st.textContent = t + " "; st.append(el("button", { type: "button", class: "link", text: "Undo", onclick: () => { fn(); setStatus("Undone."); } })); }
 const pad = n => String(n).padStart(2, "0");
 const ymd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 const ym = d => d.getFullYear() + "-" + pad(d.getMonth() + 1);
@@ -922,10 +923,10 @@ function itemRow(it, opts) {
   opts = opts || {};
   const id = it.id, sfx = opts.showList ? "-t" : "", editing = S.edit.has(id), di = dueInfo(it.due);
   const cb = el("input", { type: "checkbox", class: "box", id: "cb-" + id + sfx, "aria-labelledby": "t-" + id + sfx }); cb.checked = !!it.done;
-  cb.addEventListener("change", () => patch(id, { done: cb.checked, doneAt: cb.checked ? nowIso() : "" }));
+  cb.addEventListener("change", () => { const was = cb.checked; patch(id, { done: was, doneAt: was ? nowIso() : "" }); if (was) undoStatus("Marked \u201c" + it.title + "\u201d done.", () => patch(id, { done: false, doneAt: "" })); });
   const chips = el("div", { class: "chips" }, opts.showList ? el("span", { class: "chip", text: it.list === "life" && it.section === "absolute" ? "Absolute" : listName(it.list) }) : null,
     it.star && !opts.showList ? el("span", { class: "chip star", text: "★ Do first" }) : null, di ? el("span", { class: "chip " + di.cls, text: di.label }) : null);
-  const body = el("div", { class: "body" }, el("label", { class: "title", id: "t-" + id + sfx, for: cb.id, text: it.title }), it.detail ? el("div", { class: "detail", text: it.detail }) : null,
+  const body = el("div", { class: "body" }, (it.done ? el("div", { class: "title", id: "t-" + id + sfx, text: it.title }) : el("button", { type: "button", class: "title tbtn", id: "t-" + id + sfx, "aria-expanded": editing ? "true" : "false", text: it.title, onclick: () => { editing ? S.edit.delete(id) : S.edit.add(id); render(true); } })), it.detail ? el("div", { class: "detail", text: it.detail }) : null,
     chips.childNodes.length ? chips : null, !editing && it.update && it.update.trim() ? el("div", { class: "latest", text: it.update.trim() }) : null);
   if (!it.done) body.append(el("div", { class: "acts" },
     el("button", { type: "button", class: "link", "aria-pressed": it.star ? "true" : "false", text: it.star ? "★ Do first" : "☆ Do first", onclick: () => patch(id, { star: !it.star }) }),
