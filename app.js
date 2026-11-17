@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.6";
+const APP_VERSION = "2.2.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -249,8 +249,6 @@ function alerts() {
     if (cur) { const di = dueInfo(absDue(c, cur)); if (di && di.diff <= 3) out.push({ job: "absolute", cls: di.cls || "today", text: c.name + " " + mLabel(cur) + ": " + di.label.toLowerCase(), go: "absolute" }); }
   }
   for (const c of aAll()) if (!c.inactive && c.type === "weekly" && c.nextDate && c.nextDate <= todayStr()) out.push({ job: "absolute", cls: c.nextDate < todayStr() ? "over" : "today", text: "Meeting with " + c.name + (c.nextDate < todayStr() ? " was " + fmtDay(c.nextDate) + ". Set the next one." : " today"), go: "absolute" });
-  const crmDue = SERVER.crm.filter(r => r.next && r.next <= todayStr() && !/stalled|inactive|on hold/i.test(r.status)).length;
-  if (crmDue) out.push({ job: "absolute", cls: "today", text: crmDue + " CRM follow-up" + (crmDue > 1 ? "s" : "") + " due", go: "absolute" });
   for (const p of live("social")) if (p.status !== "posted" && p.date && p.date <= todayStr()) out.push({ job: "absolute", cls: p.date < todayStr() ? "over" : "today", text: "Post: " + p.title, go: "absolute" });
   return out;
 }
@@ -277,6 +275,7 @@ function renderHome(main) {
     x.act ? el("button", { type: "button", class: "btn small", text: x.actLabel, onclick: x.act }) : el("button", { type: "button", class: "link", text: "Open", onclick: () => go(x.go) })));
   if (!al.length) ul.append(el("li", { class: "empty", text: "Nothing needs your attention right now." }));
   main.append(card("Needs attention", al.length ? String(al.length) : "", ul, notifyButton()));
+  main.append(crmTodayCard());
   const bl = allBlockers();
   if (bl.length) {
     const det = el("details", { class: "card" }, el("summary", { text: "Blockers (" + bl.length + "): " + ["TPAM", "Vicki's", "Absolute"].map(j => j + " " + bl.filter(x => x[0] === j).length).join(" · ") }));
@@ -301,6 +300,7 @@ async function notifyIfNew(force) {
   try {
     if (!("Notification" in window) || Notification.permission !== "granted") return;
     const al = alerts().filter(a => a.cls === "over" || /Invoice|Reach out/.test(a.text));
+    const fu = crmToday().length; if (fu) al.unshift({ text: fu + " follow-up" + (fu > 1 ? "s" : "") + " to send today" });
     const key = todayStr() + ":" + al.map(a => a.text).join("|");
     if (!al.length || (!force && LS.get("hub:notified", "") === key)) return;
     LS.set("hub:notified", key);
@@ -633,35 +633,114 @@ function clientSettings(c) {
       el("button", { type: "button", class: "link", text: conf ? "Tap again to archive " + c.name : "Archive client", onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "ac:" + c.id; render(true); } })));
   return det;
 }
-function crmCard() {
-  const rows = SERVER.crm || [], t = todayStr();
-  const due = rows.filter(r => r.next && r.next <= t && !/stalled|inactive|on hold/i.test(r.status)).sort((a, b) => a.next < b.next ? -1 : 1);
-  const stats = {}; for (const r of rows) { const s = r.status || "No status"; stats[s] = (stats[s] || 0) + 1; }
-  const c = card("CRM follow-ups", rows.length ? due.length + " due" : "");
-  if (SERVER.crmError) c.append(el("div", { class: "hint", text: "Couldn't read your CRM sheet: " + SERVER.crmError }));
-  else if (!config) { c.append(el("div", { class: "hint", text: "Your CRM shows here once the app is connected to your Sheet." })); return c; }
-  const chips = el("div", { class: "filters" }, el("button", { type: "button", "aria-pressed": S.crmFilter === "due" ? "true" : "false", text: "Due (" + due.length + ")", onclick: () => { S.crmFilter = "due"; render(true); } }),
-    ...Object.entries(stats).sort((a, b) => b[1] - a[1]).map(([s, n]) => el("button", { type: "button", "aria-pressed": S.crmFilter === s ? "true" : "false", text: s + " (" + n + ")", onclick: () => { S.crmFilter = s; render(true); } })));
-  c.append(chips);
-  const list = S.crmFilter === "due" ? due : rows.filter(r => (r.status || "No status") === S.crmFilter);
+/* ---------- CRM follow-ups ---------- */
+const CRM_SKIP = /stalled|inactive|on hold/i;
+const crmLive = () => (SERVER.crm || []).filter(r => !CRM_SKIP.test(r.status));
+const crmDue = () => crmLive().filter(r => r.next && r.next <= todayStr()).sort((a, b) => a.next < b.next ? -1 : a.next > b.next ? 1 : a.row - b.row);
+const crmNew = () => crmLive().filter(r => !r.last && !r.next).sort((a, b) => a.row - b.row);
+const crmToday = () => [...crmDue(), ...crmNew().slice(0, Number(setting("crmNewPerDay", 3)) || 0)];
+function crmFirst(r) {
+  const n = String(r.contact || "").replace(/\(.*?\)/g, "").split("/")[0].trim();
+  if (!n || /^(office|front desk|customer care|owner|individual)\b/i.test(n)) return "";
+  return n.split(/\s+/)[0];
+}
+function crmAudience(r) {
+  const sv = (r.service || "") + " " + (r.notes || "");
+  if (/association|CAM\b|communit/i.test(sv)) return ["community associations and the companies that manage them", "I already do association financials every month, so I can step in on month-end, reconciliations or overflow when your team is stretched."];
+  if (/rental|owner statement|trust|propert/i.test(sv)) return ["property managers", "I can take owner statements, reconciliations and back-office paperwork off your plate."];
+  return ["contractors and small businesses", "I can get QuickBooks cleaned up and keep it that way, so you're not buried in receipts at tax time."];
+}
+function crmWhere(r) { const h = r.how || ""; return /konecki/i.test(h) ? " at the Konecki lunch" : /cheers/i.test(h) ? " at Cheers" : /red'?s/i.test(h) ? " at Red's" : /whitey/i.test(h) ? " at Whitey's" : ""; }
+function crmDraft(r) {
+  const f = crmFirst(r), hi = f ? "Hi " + f + "," : "Hi there,", svc0 = r.service || "bookkeeping", svc = /^[A-Z][a-z]/.test(svc0) ? svc0[0].toLowerCase() + svc0.slice(1) : svc0;
+  const sig = "\n\nThanks,\nJodi Smith\nAbsolute Bookkeeping & Virtual Assistant", [aud, pitch] = crmAudience(r);
+  const when = r.last ? " from " + shortDate(parseYmd(r.last)) : "";
+  if (!r.last) return { text: hi + " this is Jodi with Absolute Bookkeeping in Orange Park. I help " + aud + " with " + svc + ". Would you be open to a quick call this week?",
+    subject: "Bookkeeping help for " + r.company, email: hi + "\n\nMy name is Jodi Smith with Absolute Bookkeeping in Orange Park. I work with " + aud + " and help with " + svc + ". " + pitch + "\n\nWould you be open to a quick 10-minute call this week or next?" + sig };
+  if (/Currently Working/i.test(r.category)) return { text: hi + " just checking in. Anything you need from me this week?", subject: "Checking in", email: hi + "\n\nJust checking in. Is there anything you need from me this week?" + sig };
+  if (/Past Client/i.test(r.category)) return { text: hi + " it's Jodi with Absolute Bookkeeping. Hope you're doing well! Tax season is coming up. If you'd like help getting things ready, I'd be glad to help.", subject: "Getting ready for tax season", email: hi + "\n\nHope you're doing well! Tax season is coming up, and if you'd like help getting your books ready, I'd be glad to help." + sig };
+  if (/Met in Person/i.test(r.category) || /hot|warm/i.test(r.status)) return { text: hi + " it's Jodi with Absolute Bookkeeping. It was great meeting you" + crmWhere(r) + ". I'd love to grab coffee or set up a quick call this week. What works for you?",
+    subject: "Great meeting you", email: hi + "\n\nIt was great meeting you" + crmWhere(r) + ". I'd love to grab coffee or set up a quick call this week to hear more about what you're working on. What works for you?" + sig };
+  return { text: hi + " it's Jodi with Absolute Bookkeeping. Just following up on my message" + when + ". If " + svc + " is something you could use help with, I'm happy to take a free 10-minute look at your QuickBooks. No pressure either way!",
+    subject: "Following up: " + r.company, email: hi + "\n\nJust following up on my message" + when + ". If " + svc + " is something you could use help with, I'm happy to take a free 10-minute look at your QuickBooks. No pressure either way." + sig };
+}
+const crmLogId = r => "crmlog:" + r.company;
+function crmLog(r, line) { const ex = DB.notes.get(crmLogId(r)); put("notes", { id: crmLogId(r), text: (fmtDay(todayStr()) + ": " + line) + (ex && ex.text ? "\n" + ex.text : "") }); }
+async function copyText(t, what) { try { await navigator.clipboard.writeText(t); setStatus(what + " copied. Paste it wherever you're sending it."); } catch (_) { setStatus("Couldn't copy. Select the text and copy it yourself."); } }
+function crmDetail(r) {
+  const d = crmDraft(r), id = "cm-" + r.row, gap = CRM_GAP[r.category] || 4;
+  const useEmail = !r.phone && r.email;
+  const ta = el("textarea", { id, rows: "6", class: "draft" }); ta.value = useEmail ? d.email : d.text;
+  const phone = String(r.phone || "").replace(/[^\d+]/g, "");
+  const send = el("div", { class: "btnrow" },
+    el("button", { type: "button", class: "btn", text: "Copy message", onclick: () => copyText(ta.value, "Message") }),
+    phone ? el("a", { class: "btn ghost linkbtn", href: "sms:" + phone + "?&body=" + encodeURIComponent(ta.value), text: "Text " + r.phone, onclick: e => { e.currentTarget.href = "sms:" + phone + "?&body=" + encodeURIComponent(ta.value); } }) : null,
+    r.email ? el("a", { class: "btn ghost linkbtn", href: "#", text: "Email", onclick: e => { const body = ta.value === d.text ? d.email : ta.value; e.currentTarget.href = "mailto:" + r.email + "?subject=" + encodeURIComponent(d.subject) + "&body=" + encodeURIComponent(body); } }) : null,
+    phone ? el("a", { class: "btn ghost linkbtn", href: "tel:" + phone, text: "Call" }) : null);
+  const swap = r.phone && r.email ? el("div", { class: "seg2" },
+    el("button", { type: "button", class: "link", text: "Text version", onclick: () => { ta.value = d.text; } }),
+    el("button", { type: "button", class: "link", text: "Email version", onclick: () => { ta.value = d.email; } })) : null;
+  const note = el("input", { type: "text", id: "cl-" + r.row, placeholder: "What happened? (optional)" });
+  const nx = el("input", { type: "date", id: "cn-" + r.row }); nx.value = r.next || "";
+  const after = n => { const x = addDays(new Date(), n); while (x.getDay() === 0 || x.getDay() === 6) x.setDate(x.getDate() + 1); return ymd(x); };
+  const log = (what, f) => { const fields = { last: todayStr(), ...f }; if ((!r.status || /to contact/i.test(r.status)) && !f.status) fields.status = "Cold Outreach"; crmPut(r, fields); crmLog(r, what + (note.value.trim() ? ". " + note.value.trim().replace(/[.!?]?$/, ".") : ".") + (fields.next ? " Next: " + fmtDay(fields.next) + "." : "")); setStatus(r.company + " logged."); render(true); };
+  const outcomes = el("div", { class: "chips2" },
+    ...[["Texted", { next: after(gap) }], ["Emailed", { next: after(gap) }], ["Called, no answer", { next: after(2) }],
+      ["They replied", { next: after(3), status: "Warm / Reconnect" }], ["Meeting set", { status: "Hot Prospect" }], ["Not interested", { next: "", status: "Stalled / Inactive" }]]
+      .map(([t, f]) => el("button", { type: "button", class: "btn ghost small", text: t, onclick: () => log(t, t === "Meeting set" ? { ...f, next: nx.value || after(7) } : f) })));
+  const quick = el("div", { class: "chips2" }, ...[["2 days", 2], ["1 week", 7], ["2 weeks", 14], ["1 month", 30], ["3 months", 90]].map(([t, n]) =>
+    el("button", { type: "button", class: "btn ghost small", text: t, onclick: () => { crmPut(r, { next: after(n) }); setStatus("Next follow-up: " + fmtDay(after(n)) + "."); render(true); } })));
+  nx.addEventListener("change", () => { crmPut(r, { next: nx.value }); render(true); });
+  const hist = (DB.notes.get(crmLogId(r)) || {}).text || "";
+  return el("div", { class: "detail-card" },
+    el("div", { class: "vr-s", text: [r.service, r.status, r.how].filter(Boolean).join(" · ") }),
+    r.notes ? el("div", { class: "crm-notes", text: r.notes }) : null,
+    el("div", { class: "subhead", text: useEmail ? "Ready-to-send email" : "Ready-to-send text" }), swap, ta,
+    useEmail ? el("div", { class: "vr-s", text: "Subject: " + d.subject }) : null, send,
+    el("div", { class: "subhead", text: "Log what happened" }), note, outcomes,
+    el("div", { class: "subhead", text: "Next follow-up" }), quick, field("Or pick a date", nx),
+    hist ? el("details", { class: "mini" }, el("summary", { text: "History" }), el("div", { class: "crm-notes", text: hist })) : null,
+    el("div", { class: "vr-s", text: "Last contact: " + (r.last ? fmtDay(r.last) : "never") }));
+}
+function crmList(list, empty) {
   const ul = el("ul", { class: "crm" });
   for (const r of list) {
     const k = "crm:" + r.row, open = S.open.has(k), di = dueInfo(r.next);
     const li = el("li", {}, el("button", { type: "button", class: "crm-row", "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete(k) : S.open.add(k); render(true); } },
-      el("div", {}, el("b", { text: r.company }), el("div", { class: "vr-s", text: [r.contact, r.service].filter(Boolean).join(" · ") })), di ? el("span", { class: "chip " + di.cls, text: di.label }) : null));
-    if (open) {
-      const nx = el("input", { type: "date", id: "cn-" + r.row }); nx.value = r.next || ""; nx.addEventListener("change", () => { crmPut(r, { next: nx.value }); render(true); });
-      li.append(el("div", { class: "detail-card" },
-        el("div", { class: "vr-s", text: r.notes || "" }),
-        el("div", { class: "contact" }, r.phone ? el("a", { href: "tel:" + r.phone.replace(/[^\d+]/g, ""), text: "Text/call " + r.phone }) : null, r.email ? el("a", { href: "mailto:" + r.email, text: r.email }) : null),
-        el("div", { class: "vr-s", text: "Last contact: " + (r.last || "—") + " · " + (r.category || "") + (r.how ? " · " + r.how : "") }),
-        el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Contacted today", onclick: () => { const gap = CRM_GAP[r.category] || 7; crmPut(r, { last: todayStr(), next: ymd(addDays(new Date(), gap)) }); render(true); } })),
-        field("Next follow-up", nx)));
-    }
+      el("div", {}, el("b", { text: r.company }), el("div", { class: "vr-s", text: [r.contact, r.service].filter(Boolean).join(" · ") })),
+      !r.last && !r.next ? el("span", { class: "chip", text: "New" }) : di ? el("span", { class: "chip " + di.cls, text: di.label }) : null));
+    if (open) li.append(crmDetail(r));
     ul.append(li);
   }
-  if (!list.length) ul.append(el("li", { class: "empty", text: S.crmFilter === "due" ? "No follow-ups due today." : "Nobody in this group." }));
-  c.append(ul, el("div", { class: "hint small", text: "\"Contacted today\" updates Last Contact and Next Follow-Up in your CRM sheet." }));
+  if (!list.length) ul.append(el("li", { class: "empty", text: empty }));
+  return ul;
+}
+function crmTodayCard() {
+  const due = crmDue(), fresh = crmNew().slice(0, Number(setting("crmNewPerDay", 3)) || 0);
+  const c = card("Follow-ups today", (due.length + fresh.length) ? String(due.length + fresh.length) : "");
+  if (SERVER.crmError) { c.append(el("div", { class: "hint", text: "Couldn't read your CRM sheet: " + SERVER.crmError })); return c; }
+  if (!config) { c.append(el("div", { class: "hint", text: "Your CRM follow-ups show here once the app is connected to your Sheet." })); return c; }
+  if (due.length) c.append(el("div", { class: "subhead", text: "Due or overdue, oldest first" }), crmList(due, ""));
+  if (fresh.length) c.append(el("div", { class: "subhead", text: "New outreach: " + fresh.length + " today (" + crmNew().length + " never contacted)" }), crmList(fresh, ""));
+  if (!due.length && !fresh.length) c.append(el("div", { class: "empty", text: "No follow-ups due today." }));
+  c.append(el("div", { class: "hint small", text: "Tap a name for a ready-to-send message. Logging it updates Last Contact, Next Follow-Up and Status in your CRM sheet." }));
+  return c;
+}
+function crmCard() {
+  const rows = SERVER.crm || [];
+  const stats = {}; for (const r of rows) { const s = r.status || "No status"; stats[s] = (stats[s] || 0) + 1; }
+  const today = crmToday();
+  const c = card("CRM follow-ups", rows.length ? today.length + " today" : "");
+  if (SERVER.crmError) { c.append(el("div", { class: "hint", text: "Couldn't read your CRM sheet: " + SERVER.crmError })); return c; }
+  if (!config) { c.append(el("div", { class: "hint", text: "Your CRM shows here once the app is connected to your Sheet." })); return c; }
+  if (!S.crmFilter || S.crmFilter === "due") S.crmFilter = "today";
+  const chip = (key, label) => el("button", { type: "button", "aria-pressed": S.crmFilter === key ? "true" : "false", text: label, onclick: () => { S.crmFilter = key; render(true); } });
+  c.append(el("div", { class: "filters" }, chip("today", "Today (" + today.length + ")"), chip("new", "Never contacted (" + crmNew().length + ")"),
+    ...Object.entries(stats).sort((a, b) => b[1] - a[1]).map(([s, n]) => chip(s, s + " (" + n + ")"))));
+  const list = S.crmFilter === "today" ? today : S.crmFilter === "new" ? crmNew() : rows.filter(r => (r.status || "No status") === S.crmFilter);
+  const per = el("select", { id: "crm-per" }, ...[0, 1, 2, 3, 5, 10].map(n => el("option", { value: String(n), text: n + " new a day" }))); per.value = String(setting("crmNewPerDay", 3));
+  per.addEventListener("change", () => { put("settings", { id: "crmNewPerDay", value: per.value }); render(true); });
+  c.append(crmList(list, S.crmFilter === "today" ? "No follow-ups due today." : "Nobody in this group."), field("New prospects to add to Today", per));
   return c;
 }
 function socialCard() {

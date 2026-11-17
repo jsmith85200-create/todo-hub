@@ -224,3 +224,8 @@ body{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}
 .linkbtn{display:inline-flex;align-items:center;text-decoration:none;flex:1 1 150px;justify-content:center}
 .atile .chip{white-space:normal;max-width:100%}
 .btn.ghost.on{background:var(--accent-soft)}
+
+.draft{width:100%;font:400 16px/1.4 var(--body);padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);resize:vertical;box-sizing:border-box}
+.chips2{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.seg2{display:flex;gap:14px;margin:4px 0}
+.crm-notes{white-space:pre-wrap;font-size:14px;color:var(--muted,#666);margin:6px 0}
