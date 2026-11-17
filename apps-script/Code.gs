@@ -23,7 +23,7 @@ const KINDS = {
   tpam:     ["id", "period", "code", "step", "d1", "d2", "d3", "d4", "d5", "blocker", "note", "updatedAt"],
   vclients: ["id", "name", "software", "how", "note", "void", "updatedAt"],
   vwork:    ["id", "client", "svc", "freq", "start", "cthru", "rthru", "vstep", "priority", "blocker", "note", "login", "info", "void", "updatedAt"],
-  aclients: ["id", "name", "type", "services", "fee", "start", "dueDay", "lastClassified", "nextDate", "lastMet", "inactive", "blocker", "note", "order", "void", "updatedAt"],
+  aclients: ["id", "name", "type", "services", "fee", "start", "dueDay", "lastClassified", "nextDate", "lastMet", "days", "inactive", "blocker", "note", "order", "void", "updatedAt"],
   awork:    ["id", "client", "period", "step", "d1", "d2", "d3", "d4", "invoiced", "blocker", "note", "updatedAt"],
   social:   ["id", "title", "platform", "date", "status", "note", "void", "updatedAt"]
 };

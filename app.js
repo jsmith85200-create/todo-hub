@@ -566,12 +566,21 @@ function absVa(c, p) {
 }
 function absWeekly(c) {
   const save = f => put("aclients", { ...DB.aclients.get(c.id), ...f });
+  const days = String(c.days || "").split(/[\s,]+/).filter(Boolean).map(Number).filter(n => n >= 0 && n <= 6);
+  const nextOn = (dow, from) => { const d = new Date(from); d.setHours(0, 0, 0, 0); while (d.getDay() !== dow) d.setDate(d.getDate() + 1); return ymd(d); };
+  const after = d => { const x = addDays(parseYmd(d), 1); return days.length ? days.map(w => nextOn(w, x)).sort()[0] : ymd(addDays(parseYmd(d), 6)); };
   const di = dueInfo(c.nextDate);
   const nd = el("input", { type: "date", id: "wn-" + c.id }); nd.value = c.nextDate || ""; nd.addEventListener("change", () => { save({ nextDate: nd.value }); render(true); });
+  const quick = days.map(w => { const d = nextOn(w, new Date()); return el("button", { type: "button", class: "btn ghost" + (c.nextDate === d ? " on" : ""), text: DAYS[w].slice(0, 3) + " " + shortDate(parseYmd(d)), onclick: () => { save({ nextDate: d }); render(true); } }); });
+  const dayPick = el("div", { class: "chks" }, ...[1, 2, 3, 4, 5].map(w => { const cb = el("input", { type: "checkbox", id: "wd-" + c.id + w }); cb.checked = days.includes(w); cb.addEventListener("change", () => { const set = new Set(days); cb.checked ? set.add(w) : set.delete(w); save({ days: [...set].sort().join(" ") }); render(true); }); return el("label", { class: "chk" }, cb, " " + DAYS[w].slice(0, 3)); }));
   return el("div", { class: "acard" },
-    absHead(c, c.nextDate ? el("span", { class: "chip " + (di ? di.cls : ""), text: di && di.diff <= 1 ? di.label.replace("Due", "Meeting") : "Next: " + fmtDay(c.nextDate) }) : el("span", { class: "chip", text: "Set the next date" })),
-    el("div", { class: "row2" }, field("Next meeting", nd), el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Met · next week", onclick: () => { const base = c.nextDate && c.nextDate >= todayStr() ? parseYmd(c.nextDate) : new Date(); save({ lastMet: todayStr(), nextDate: ymd(addDays(base, 7)) }); render(true); } }))),
+    absHead(c, c.nextDate ? el("span", { class: "chip " + (di ? di.cls : ""), text: di && di.diff === 0 ? "Meeting today" : di && di.diff < 0 ? "Was " + fmtDay(c.nextDate) : "Next: " + fmtDay(c.nextDate) }) : el("span", { class: "chip", text: "Set the next date" })),
+    days.length ? el("div", { class: "vr-s", text: "Usually " + days.map(w => DAYS[w]).join(" or ") }) : null,
+    quick.length ? el("div", { class: "btnrow" }, ...quick) : null,
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Met · set next", onclick: () => { save({ lastMet: todayStr(), nextDate: after(todayStr()) }); render(true); } })),
+    field("Or pick a date", nd),
     c.lastMet ? el("div", { class: "vr-s", text: "Last met " + fmtDay(c.lastMet) }) : null,
+    el("details", { class: "mini" }, el("summary", { text: "Usual meeting days" }), dayPick),
     clientSettings(c));
 }
 function stepper(steps, cur, onPick, r) {

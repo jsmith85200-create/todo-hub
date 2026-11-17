@@ -223,3 +223,4 @@ details.mini summary{font-size:15px}
 body{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}
 .linkbtn{display:inline-flex;align-items:center;text-decoration:none;flex:1 1 150px;justify-content:center}
 .atile .chip{white-space:normal;max-width:100%}
+.btn.ghost.on{background:var(--accent-soft)}
