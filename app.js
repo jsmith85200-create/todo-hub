@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.2";
+const APP_VERSION = "2.1.3";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -428,8 +428,13 @@ function renderVicki(main) {
   const svc = S.vsvc, ws = live("vwork").filter(w => w.svc === svc && DB.vclients.get(w.client) && !DB.vclients.get(w.client).void);
   const legend = el("div", { class: "legend" }, ...[["s5", "Complete"], ["s1", "Received · working"], ["s2", "Waiting on docs"], ["s4", "Waiting on review"], ["nr", "Not received"], ["na", "Not due"]].map(([c, t]) => el("span", {}, el("i", { class: "cell " + c }), t)));
   main.append(legend);
-  for (const [soft, sname] of V_SOFT) {
-    const group = ws.filter(w => (DB.vclients.get(w.client).software || "") === soft).sort((a, b) => (a.priority || 2) - (b.priority || 2) || vName(a).localeCompare(vName(b)));
+  const blk = w => !!(w.blocker && !(w.cthru && w.cthru >= m));
+  const order = (a, b) => (blk(b) - blk(a)) || (a.priority || 2) - (b.priority || 2) || vName(a).localeCompare(vName(b));
+  const groups = svc === "books"
+    ? V_SOFT.map(([soft, sname]) => [sname, ws.filter(w => (DB.vclients.get(w.client).software || "") === soft)])
+    : [["Blocked", ws.filter(blk)], ["Everyone else", ws.filter(w => !blk(w))]];
+  for (const [sname, g] of groups) {
+    const group = g.sort(order);
     if (!group.length) continue;
     const sec = el("section", {}, el("h2", {}, el("span", { text: sname }), el("small", { text: group.filter(w => w.cthru && w.cthru >= m || !vDue(w, m)).length + " of " + group.length + " done for " + mShort(m) })));
     for (const w of group) sec.append(vRow(w, m));
@@ -452,7 +457,7 @@ function vRow(w, m) {
   const status = w.cthru ? "Complete through " + mShort(w.cthru) : "Nothing complete yet";
   const row = el("button", { type: "button", class: "vrow" + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("v:" + w.id) : S.open.add("v:" + w.id); render(true); } },
     el("div", { class: "vr-h" }, el("span", { class: "vr-n", text: c.name }), w.priority === 1 ? el("span", { class: "chip over", text: "High" }) : w.priority === 3 ? el("span", { class: "chip", text: "Low" }) : null,
-      working ? stepChip(stp[1], stp[2]) : vComplete(w) ? stepChip("Printed & complete", "s5") : stepChip("Waiting to receive", "nr")),
+      (w.cthru && w.cthru >= m) || (!vDue(w, m) && vComplete(w)) ? stepChip("Printed & complete", "s5") : working || w.vstep ? stepChip(stp[1], stp[2]) : stepChip("Waiting to receive", "nr")),
     strip,
     el("div", { class: "vr-s", text: status + (working ? " · received through " + mShort(w.rthru) : "") + (w.freq === "q" ? " · quarterly" : w.freq === "a" ? " · annual" : "") }),
     blockerLine(!(w.cthru && w.cthru >= m) && w.blocker));
