@@ -1,45 +1,58 @@
 "use strict";
-/* Jodi's To-Do Hub
-   Works offline: everything is kept on this device first, then synced to
-   Jodi's Google Sheet through her Apps Script web app when there's a connection. */
+/* Jodi's To-Do Hub — three job dashboards (TPAM, Vicki's office, Absolute) plus Home and Personal.
+   Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
+   through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "1.0.0";
-const LISTS = [
-  { key: "tpam", name: "TPAM", sections: [["oct", "October financials"], ["follow", "Follow-ups"], ["other", "Other TPAM"]] },
-  { key: "vicki", name: "Vicki's Office", sections: [["office", "Office to-dos"], ["ready", "Ready to work"], ["review", "Needs review"], ["waiting", "Waiting on docs"], ["hold", "On hold"]] },
-  { key: "life", name: "Absolute & Life", sections: [["absolute", "Absolute Bookkeeping"], ["money", "Money"], ["errands", "Health, calls & errands"], ["jobs", "Job search"], ["home", "Home"], ["grocery", "Grocery list"]] }
-];
-const TABS = [["today", "Today"], ["tpam", "TPAM"], ["vicki", "Vicki's"], ["life", "Absolute & Life"], ["close", "Month-end"]];
-const STATUS = [["", "To do"], ["waiting", "Waiting on someone"], ["review", "Needs review"], ["hold", "On hold"]];
-const STAGES = {
-  tpam: ["Statement in", "Reconciled", "Prepared", "IK review", "Sent to CAM", "CAM approved", "Sent to board"],
-  vicki: ["Docs in", "Categorized", "Reconciled", "Review", "Filed / sent"],
-  absolute: ["Docs in", "Categorized", "Reconciled", "Reports sent", "Invoiced"]
-};
-const CJOBS = [["tpam", "TPAM"], ["vicki", "Vicki's"], ["absolute", "Absolute"]];
-const ROTATION = { 1: [["HCAI", "Hillwood"], ["BPC", "Brighton Place"]], 2: [["MOA", "Marisol"], ["PBH", "Palm Bay"]], 3: [["PTCA", "Palmetto Trace"], ["PWCA", "Palms West"]], 4: [["SGI", "Sawgrass Island"], ["RVE", "Rivers Edge"]] };
+const APP_VERSION = "2.0.0";
+const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
+const BOOL = new Set(["done", "star", "void", "manual"]);
+const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee"]);
+
+const TABS = [["home", "Home"], ["tpam", "TPAM"], ["vicki", "Vicki's"], ["absolute", "Absolute"], ["personal", "Personal"]];
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const KINDS = ["items", "close", "time", "rotation", "notes"];
-const BOOL = new Set(["done", "star", "void", "manual"]);
-const NUM = new Set(["stage", "order"]);
+
+/* ---- TPAM ---- */
+const T_STEPS = ["Not started", "In progress", "To CAM", "Corrections", "To CAM again", "To board"];
+const T_CLS = ["s0", "s1", "s2", "s3", "s2", "s5"];
+const ROTATION = { 1: [["HCAI", "Hillwood"], ["BPC", "Brighton Place"]], 2: [["MOA", "Marisol"], ["PBH", "Palm Bay"]], 3: [["PTCA", "Palmetto Trace"], ["PWCA", "Palms West"]], 4: [["SGI", "Sawgrass Island"], ["RVE", "Rivers Edge"]] };
+
+/* ---- Vicki's ---- */
+const V_SVCS = [["books", "Bookkeeping"], ["stax", "Sales tax"], ["ptax", "Payroll tax"], ["pdep", "Payroll deposits"]];
+const V_STEPS = [["", "Not started", "s0"], ["progress", "In progress", "s1"], ["docs", "Waiting on docs", "s2"], ["review", "Waiting on review", "s4"]];
+const V_SOFT = [["qbo", "QuickBooks Online"], ["desktop", "QuickBooks Desktop"], ["", "Other / not set"]];
+const PRIORITY = [[1, "High"], [2, "Normal"], [3, "Low"]];
+
+/* ---- Absolute ---- */
+const A_BOOKS = ["Not started", "Reconciled", "Financials sent"];
+const A_VA = ["Not started", "Reached out", "Job received", "Job done", "Invoiced"];
+const SOCIAL = [["idea", "Idea"], ["drafted", "Drafted"], ["scheduled", "Scheduled"], ["posted", "Posted"]];
+const CRM_GAP = { "Met in Person": 3, "Cold Emailed / Outreach": 4, "Currently Working With": 14, "Past Client - Inactive": 90 };
+
+/* ---- To-do lists ---- */
+const LISTS = [
+  { key: "tpam", name: "TPAM", sections: [["follow", "Follow-ups"], ["other", "Other TPAM"]] },
+  { key: "vicki", name: "Vicki's Office", sections: [["office", "Office to-dos"]] },
+  { key: "life", name: "Absolute & Life", sections: [["absolute", "Absolute to-dos"], ["money", "Money"], ["errands", "Health, calls & errands"], ["jobs", "Job search"], ["home", "Home"], ["grocery", "Grocery list"]] }
+];
 
 /* ================= storage + sync ================= */
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (_) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (_) { return false; } }
 };
-const DB = { items: new Map(), close: new Map(), time: new Map(), rotation: new Map(), notes: new Map() };
-let queue = {};            // "kind:id" -> { kind, rec }
-let config = LS.get("hub:config", null); // { url, token }
+const DB = {}; for (const k of KINDS) DB[k] = new Map();
+let SERVER = { crm: [], wl: [], crmError: "", wlError: "" };
+let queue = {};
+let config = LS.get("hub:config", null);
 let lastSync = LS.get("hub:lastSync", "");
-let syncState = { busy: false, error: "", timer: 0 };
+const syncState = { busy: false, error: "", timer: 0 };
 
 function norm(rec) {
   const o = { ...rec };
   for (const k of Object.keys(o)) {
     if (BOOL.has(k)) o[k] = o[k] === true || o[k] === "true" || o[k] === "TRUE";
-    else if (NUM.has(k)) o[k] = Number(o[k]) || 0;
+    else if (NUM.has(k)) o[k] = o[k] === "" || o[k] == null ? 0 : Number(o[k]) || 0;
     else if (o[k] == null) o[k] = "";
     else o[k] = String(o[k]);
   }
@@ -48,31 +61,36 @@ function norm(rec) {
 function loadLocal() {
   const data = LS.get("hub:data", {});
   for (const k of KINDS) DB[k] = new Map((data[k] || []).map(r => [r.id, norm(r)]));
+  SERVER = LS.get("hub:server", SERVER);
   queue = LS.get("hub:queue", {});
 }
 function saveLocal() {
   const data = {}; for (const k of KINDS) data[k] = [...DB[k].values()];
-  const ok = LS.set("hub:data", data) && LS.set("hub:queue", queue);
+  const ok = LS.set("hub:data", data) && LS.set("hub:queue", queue) && LS.set("hub:server", SERVER);
   if (!ok) setStatus("This device is out of storage space. Your changes may not be kept.");
 }
 const nowIso = () => new Date().toISOString();
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const live = kind => [...DB[kind].values()].filter(r => !r.void);
 
-/* Every change goes through here: save on the device, queue for the Sheet. */
 function put(kind, rec) {
   const r = norm({ ...rec, updatedAt: nowIso() });
   DB[kind].set(r.id, r);
   queue[kind + ":" + r.id] = { kind, rec: r };
-  saveLocal();
-  scheduleSync(1500);
+  saveLocal(); scheduleSync(1500);
   return r;
+}
+function crmPut(row, fields) {
+  Object.assign(row, fields);
+  const key = "crm:" + row.row + ":" + row.company;
+  queue[key] = { kind: "crm", rec: { id: key, row: row.row, contact: row.contact, company: row.company, last: row.last, next: row.next, status: row.status } };
+  saveLocal(); scheduleSync(1500);
 }
 function scheduleSync(ms) { clearTimeout(syncState.timer); syncState.timer = setTimeout(sync, ms); }
 
 async function sync() {
   renderSync();
-  if (!config || !config.url || syncState.busy) return;
-  if (!navigator.onLine) { renderSync(); return; }
+  if (!config || !config.url || syncState.busy || !navigator.onLine) { renderSync(); return; }
   syncState.busy = true; renderSync();
   try {
     const pending = Object.entries(queue);
@@ -87,23 +105,22 @@ async function sync() {
       for (const raw of (got.data[k] || [])) {
         if (!raw.id) continue;
         const remote = norm(raw), local = DB[k].get(remote.id);
-        if (queue[k + ":" + remote.id]) continue;               // our newer change is still on its way up
+        if (queue[k + ":" + remote.id]) continue;
         if (!local || (remote.updatedAt || "") >= (local.updatedAt || "")) DB[k].set(remote.id, remote);
       }
     }
+    SERVER = { crm: got.crm || [], wl: got.wl || [], crmError: got.crmError || "", wlError: got.wlError || "" };
+    for (const v of Object.values(queue)) if (v.kind === "crm") { const r = SERVER.crm.find(x => x.row == v.rec.row); if (r) Object.assign(r, { last: v.rec.last, next: v.rec.next, status: v.rec.status }); }
     lastSync = nowIso(); LS.set("hub:lastSync", lastSync);
-    syncState.error = "";
-    saveLocal();
+    syncState.error = ""; saveLocal();
   } catch (e) {
     syncState.error = String(e && e.message || e);
   } finally {
-    syncState.busy = false;
-    render();
-    renderSync();
+    syncState.busy = false; render(); renderSync(); notifyIfNew();
   }
 }
 async function fetchJson(url, opts) {
-  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 30000);
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 45000);
   try {
     const r = await fetch(url, { ...(opts || {}), signal: ctl.signal, redirect: "follow" });
     const txt = await r.text();
@@ -111,21 +128,18 @@ async function fetchJson(url, opts) {
   } finally { clearTimeout(t); }
 }
 function syncText() {
-  const n = Object.keys(queue).length;
+  const n = Object.keys(queue).length, ch = n + " change" + (n === 1 ? "" : "s");
   if (!config) return { cls: "wait", text: "Not syncing yet. Saved on this device only." };
   if (syncState.busy) return { cls: "", text: "Syncing…" };
-  if (!navigator.onLine) return { cls: "wait", text: "Offline." + (n ? " " + n + " change" + (n > 1 ? "s" : "") + " will sync later." : " Everything is saved here.") };
-  if (syncState.error) {
-    const why = syncState.error === "bad_token" ? "The sync code doesn't match the Sheet." : "Couldn't reach your Google Sheet.";
-    return { cls: "err", text: why + (n ? " " + n + " change" + (n > 1 ? "s" : "") + " waiting." : "") };
-  }
-  if (n) return { cls: "wait", text: n + " change" + (n > 1 ? "s" : "") + " waiting to sync" };
+  if (!navigator.onLine) return { cls: "wait", text: "Offline." + (n ? " " + ch + " will sync later." : " Everything is saved here.") };
+  if (syncState.error) return { cls: "err", text: (syncState.error === "bad_token" ? "The sync code doesn't match the Sheet." : "Couldn't reach your Google Sheet.") + (n ? " " + ch + " waiting." : "") };
+  if (n) return { cls: "wait", text: ch + " waiting to sync" };
   return { cls: "", text: lastSync ? "Synced " + fmtTime(new Date(lastSync)) : "Not synced yet" };
 }
 function renderSync() { const s = syncText(), n = $("#sync"); if (n) { n.textContent = s.text; n.className = "sync " + s.cls; } }
 
 /* ================= helpers ================= */
-const S = { tab: "today", edit: new Set(), showDone: new Set(), period: "open", cjob: "all", timeOpen: false, confirm: "", dirty: false };
+const S = { qa: null, tab: "home", edit: new Set(), open: new Set(), showDone: new Set(), m: {}, vsvc: "books", timeOpen: false, confirm: "", dirty: false, crmFilter: "due" };
 const $ = s => document.querySelector(s);
 const timers = new Map();
 function el(tag, attrs, ...kids) {
@@ -141,395 +155,631 @@ function el(tag, attrs, ...kids) {
 function setStatus(t) { $("#status").textContent = t; }
 const pad = n => String(n).padStart(2, "0");
 const ymd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-function parseYmd(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+const ym = d => d.getFullYear() + "-" + pad(d.getMonth() + 1);
+function parseYmd(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d || 1); }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addM(p, n) { const [y, m] = p.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); return ym(d); }
+const thisMonth = () => ym(new Date());
+const prevMonth = () => addM(thisMonth(), -1);
 const shortDate = d => (d.getMonth() + 1) + "/" + d.getDate();
 const fmtTime = d => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-function periodLabel(p) { const [y, m] = p.split("-").map(Number); return (MONTHS[m - 1] || p) + " " + y; }
-
-/* ================= items ================= */
-const listName = k => (LISTS.find(l => l.key === k) || {}).name || k;
-const isWaiting = it => it.status === "waiting" || it.section === "waiting";
-const isHeld = it => it.status === "hold" || it.section === "hold";
-const allItems = () => [...DB.items.values()].filter(i => i.title && !i.void);
-const itemsFor = list => allItems().filter(i => i.list === list);
+const mLabel = p => { if (!p) return ""; const [y, m] = p.split("-").map(Number); return MONTHS[m - 1] + " " + y; };
+const mShort = p => { const [y, m] = p.split("-").map(Number); return MONTHS[m - 1].slice(0, 3) + (y !== new Date().getFullYear() ? " '" + String(y).slice(2) : ""); };
+const todayStr = () => ymd(new Date());
+const fmtDay = s => { if (!s) return ""; const d = parseYmd(s); return DAYS[d.getDay()].slice(0, 3) + " " + shortDate(d); };
+const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
 function dueInfo(s) {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  const today = parseYmd(ymd(new Date())), d = parseYmd(s), diff = Math.round((d - today) / 864e5);
+  const today = parseYmd(todayStr()), d = parseYmd(s), diff = Math.round((d - today) / 864e5);
   if (diff < 0) return { cls: "over", label: "Overdue · " + shortDate(d), diff };
   if (diff === 0) return { cls: "today", label: "Due today", diff };
   if (diff === 1) return { cls: "today", label: "Due tomorrow", diff };
-  return { cls: "", label: "Due " + DAYS[d.getDay()].slice(0, 3) + " " + shortDate(d), diff };
+  return { cls: "", label: "Due " + fmtDay(s), diff };
 }
-function sortItems(a, b) {
-  const da = a.due || "9999", dbb = b.due || "9999";
-  return (a.done - b.done) || ((b.star ? 1 : 0) - (a.star ? 1 : 0)) || (da < dbb ? -1 : da > dbb ? 1 : 0) || ((a.order || 0) - (b.order || 0));
-}
-function patch(id, fields, keepFocus) {
-  const it = DB.items.get(id); if (!it) return;
-  if (fields.done) S.edit.delete(id);
-  put("items", { ...it, ...fields, updatedBy: "jodi" });
-  if (!keepFocus) render(true); else { mark("s-" + id, "Saved"); renderTabs(); }
-}
+const monthOf = key => S.m[key] || prevMonth();
+const setting = (id, d) => { const r = DB.settings.get(id); return r ? r.value : d; };
 
-/* ================= time ================= */
-function weekStart(d) { const x = new Date(d || new Date()); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - x.getDay()); return x; }
-function targetFor(job) { if (job === "tpam") return 20; if (job === "vicki") return new Date() >= new Date(2027, 0, 1) ? 40 : 32; return null; }
-const liveTime = () => [...DB.time.values()].filter(e => !e.void && e.start);
-const running = () => liveTime().find(e => !e.end);
-function weekHours() {
-  const ws = weekStart(), out = {};
-  for (const e of liveTime()) {
-    const s = new Date(e.start), en = e.end ? new Date(e.end) : new Date();
-    if (en <= ws) continue;
-    out[e.job] = (out[e.job] || 0) + (en - Math.max(s, ws)) / 36e5;
-  }
-  return out;
-}
-function fmtH(h) { const m = Math.round(h * 60); return Math.floor(m / 60) + "h " + pad(m % 60) + "m"; }
-const jobName = k => (CJOBS.find(j => j[0] === k) || [, k])[1];
-function runningText() {
-  const r = running(); if (!r) return "Not on the clock.";
-  return "On the clock: " + jobName(r.job) + " since " + fmtTime(new Date(r.start)) + " (" + fmtH((Date.now() - new Date(r.start)) / 36e5) + ")";
-}
-
-/* ================= render ================= */
+/* ================= render shell ================= */
 function renderTabs() {
   const nav = $("#tabs"); nav.replaceChildren();
-  for (const [k, name] of TABS) {
-    let ct;
-    if (k === "today") ct = todayCount() + " to look at";
-    else if (k === "close") ct = closeRows("open", "all").length + " open";
-    else ct = itemsFor(k).filter(i => !i.done && !isWaiting(i) && !isHeld(i)).length + " to do";
-    nav.append(el("button", { type: "button", "aria-current": S.tab === k ? "page" : null, onclick: () => go(k) }, name, el("span", { class: "ct", text: ct })));
-  }
+  const counts = { home: alerts().length + " alerts", tpam: tpamStats(monthOf("tpam")).pct + "% · " + mShort(monthOf("tpam")), vicki: vickiStats(monthOf("vicki")).pct + "% · " + mShort(monthOf("vicki")), absolute: absStats(monthOf("absolute")).pct + "% · " + mShort(monthOf("absolute")), personal: itemsFor("life").filter(i => !i.done && i.section !== "absolute").length + " to do" };
+  for (const [k, name] of TABS) nav.append(el("button", { type: "button", "aria-current": S.tab === k ? "page" : null, onclick: () => go(k) }, name, el("span", { class: "ct", text: counts[k] })));
 }
 function go(k) { S.tab = k; S.confirm = ""; try { history.replaceState(null, "", "#" + k); } catch (_) { location.hash = k; } render(true); window.scrollTo(0, 0); }
-
 function render(force) {
   const ae = document.activeElement;
-  if (!force && ae && (ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || (ae.tagName === "INPUT" && ae.type !== "checkbox"))) { S.dirty = true; return; }
+  if (!force && ae && (ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || (ae.tagName === "INPUT" && !["checkbox", "button"].includes(ae.type)))) { S.dirty = true; return; }
   S.dirty = false;
   renderTabs();
   const main = $("#main"); main.replaceChildren();
-  if (S.tab === "today") renderToday(main);
-  else if (S.tab === "close") renderClose(main);
-  else if (S.tab === "settings") renderSettings(main);
-  else renderList(main, LISTS.find(l => l.key === S.tab) || LISTS[0]);
+  const qp = quickAddPanel(); if (qp) main.append(qp);
+  ({ home: renderHome, tpam: renderTpam, vicki: renderVicki, absolute: renderAbsolute, personal: renderPersonal, settings: renderSettings }[S.tab] || renderHome)(main);
   renderSync();
 }
-
-/* ---------- Today ---------- */
-const doFirst = () => allItems().filter(i => !i.done && i.star).sort(sortItems);
-const dueSoon = () => allItems().filter(i => !i.done && !i.star && dueInfo(i.due) && dueInfo(i.due).diff <= 3).sort((a, b) => a.due < b.due ? -1 : a.due > b.due ? 1 : 0);
-function rotDone(key) { const r = DB.rotation.get(key); return new Set(r && r.done ? r.done.split(",").filter(Boolean) : []); }
-function recOpen() {
-  const d = new Date(), dow = d.getDay(), out = [], mon = addDays(weekStart(d), 1);
-  for (let i = 0; i < 4; i++) {
-    const day = addDays(mon, i); if (day > d) break;
-    const done = rotDone(ymd(day));
-    for (const [code, name] of ROTATION[day.getDay()]) out.push({ day, key: ymd(day), code, name, done: done.has(code), isToday: ymd(day) === ymd(d) });
-  }
-  return { dow, list: out };
+function monthPicker(key, label) {
+  const m = monthOf(key);
+  const isDefault = m === prevMonth();
+  return el("div", { class: "mpick" },
+    el("button", { type: "button", class: "mbtn", "aria-label": "Previous month", onclick: () => { S.m[key] = addM(m, -1); render(true); } }, "‹"),
+    el("div", { class: "mlabel" }, el("b", { text: mLabel(m) }), el("span", { text: label + (isDefault ? "" : " · ") }), isDefault ? null : el("button", { type: "button", class: "link", text: "Back to " + mShort(prevMonth()), onclick: () => { delete S.m[key]; render(true); } })),
+    el("button", { type: "button", class: "mbtn", "aria-label": "Next month", disabled: m >= thisMonth(), onclick: () => { S.m[key] = addM(m, 1); render(true); } }, "›"));
 }
-const todayCount = () => doFirst().length + dueSoon().length + recOpen().list.filter(x => !x.done).length;
+function bigPct(p, sub, extra) {
+  return el("div", { class: "bigpct" },
+    el("div", { class: "ring", style: "--p:" + p }, el("b", { text: p + "%" })),
+    el("div", { class: "bp-r" }, el("div", { class: "bp-sub", text: sub }), extra || null));
+}
+function card(title, small, ...kids) {
+  const id = "h-" + Math.random().toString(36).slice(2, 7);
+  return el("section", { class: "card", "aria-labelledby": id }, el("h2", { id }, el("span", { text: title }), small ? el("small", { text: small }) : null), ...kids);
+}
+function stepChip(label, cls) { return el("span", { class: "chip step " + cls, text: label }); }
+function blockerLine(text) { return text ? el("div", { class: "blocker", text: "Blocker: " + text }) : null; }
+function field(label, input) { return el("div", { class: "field" }, el("label", { for: input.id, text: label }), input); }
+function textInput(id, value, onSave, ph) {
+  const i = el("input", { type: "text", id, placeholder: ph || "", maxlength: 300 }); i.value = value || "";
+  i.addEventListener("input", () => saveLater(id, () => onSave(i.value)));
+  i.addEventListener("blur", () => flush(id, () => onSave(i.value)));
+  return i;
+}
 
-function renderToday(main) {
+/* ================= HOME ================= */
+function alerts() {
+  const out = [], today = new Date(), dom = today.getDate(), tm = thisMonth(), pm = prevMonth(), dim = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  for (const c of live("aclients")) {
+    if (c.type === "books") {
+      const cur = DB.awork.get(c.id + "-" + tm);
+      if (!(cur && cur.invoiced)) out.push({ job: "absolute", cls: "over", text: "Invoice " + c.name + " for " + mLabel(tm) + (c.fee ? " ($" + c.fee + ")" : ""), act: () => { put("awork", { ...(cur || { id: c.id + "-" + tm, client: c.id, period: tm, step: 0 }), invoiced: todayStr() }); render(true); }, actLabel: "Mark invoiced" });
+      const wd = today.getDay() >= 1 && today.getDay() <= 5;
+      if (wd && c.lastClassified !== todayStr()) out.push({ job: "absolute", cls: "today", text: "Classify today's transactions: " + c.name, act: () => { put("aclients", { ...c, lastClassified: todayStr() }); render(true); }, actLabel: "Done today" });
+    } else {
+      const w = DB.awork.get(c.id + "-" + pm), wc = DB.awork.get(c.id + "-" + tm);
+      if (dom >= dim - 2 && !(wc && wc.step >= 1)) out.push({ job: "absolute", cls: "today", text: "Reach out to " + c.name + " for " + mLabel(tm) + "'s job", go: "absolute" });
+      if (w && w.step === 3) out.push({ job: "absolute", cls: "over", text: "Invoice " + c.name + " for " + mLabel(pm), go: "absolute" });
+      if (!w || w.step < 1) out.push({ job: "absolute", cls: "over", text: "Reach out to " + c.name + " for " + mLabel(pm) + "'s job", go: "absolute" });
+    }
+  }
+  const tdue = tpamDue(pm), ts = tpamStats(pm);
+  if (ts.board < ts.n) { const di = dueInfo(tdue); if (di && di.diff <= 5) out.push({ job: "tpam", cls: di.cls || "today", text: "TPAM " + mLabel(pm) + " financials: " + (ts.n - ts.board) + " not sent to board · " + di.label.toLowerCase(), go: "tpam" }); }
+  for (const c of live("aclients")) {
+    const months = absOpenMonths(c), cur = months[months.length - 1];
+    if (cur) { const di = dueInfo(absDue(c, cur)); if (di && di.diff <= 3) out.push({ job: "absolute", cls: di.cls || "today", text: c.name + " " + mLabel(cur) + ": " + di.label.toLowerCase(), go: "absolute" }); }
+  }
+  const crmDue = SERVER.crm.filter(r => r.next && r.next <= todayStr() && !/stalled|inactive|on hold/i.test(r.status)).length;
+  if (crmDue) out.push({ job: "absolute", cls: "today", text: crmDue + " CRM follow-up" + (crmDue > 1 ? "s" : "") + " due", go: "absolute" });
+  for (const p of live("social")) if (p.status !== "posted" && p.date && p.date <= todayStr()) out.push({ job: "absolute", cls: p.date < todayStr() ? "over" : "today", text: "Post: " + p.title, go: "absolute" });
+  return out;
+}
+function allBlockers() {
+  const out = [], pm = monthOf("tpam");
+  for (const a of assocs()) { const r = tpamRec(pm, a.code); if (r.blocker && r.step < 5) out.push(["TPAM", a.code + " · " + r.blocker]); }
+  for (const w of live("vwork")) if (w.blocker && !vComplete(w)) { const c = DB.vclients.get(w.client); out.push(["Vicki's", (c ? c.name : w.client) + " (" + svcName(w.svc) + ") · " + w.blocker]); }
+  for (const c of live("aclients")) { if (c.blocker) out.push(["Absolute", c.name + " · " + c.blocker]); for (const p of absOpenMonths(c)) { const w = DB.awork.get(c.id + "-" + p); if (w && w.blocker) out.push(["Absolute", c.name + " " + mShort(p) + " · " + w.blocker]); } }
+  return out;
+}
+function renderHome(main) {
   const d = new Date();
   main.append(el("div", { class: "dayline", text: DAYS[d.getDay()] + ", " + MONTHS[d.getMonth()] + " " + d.getDate() }));
-  if (!config) main.append(el("div", { class: "card" },
-    el("div", { class: "hint", text: "This app saves on this device. Connect it to your Google Sheet so your phone and computer stay in sync." }),
+  if (!config) main.append(el("div", { class: "card" }, el("div", { class: "hint", text: "This app saves on this device. Connect it to your Google Sheet so your phone and computer stay in sync." }),
     el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Connect my Google Sheet", onclick: () => go("settings") }))));
-
-  const tiles = el("div", { class: "tiles" });
-  for (const L of LISTS) {
-    const its = itemsFor(L.key).filter(i => !i.done);
-    const todo = its.filter(i => !isWaiting(i) && !isHeld(i)).length, wait = its.filter(isWaiting).length;
-    tiles.append(el("button", { type: "button", class: "tile", onclick: () => go(L.key) },
-      el("b", { text: String(todo) }), el("span", { class: "tn", text: L.name + " to do" }), el("br"),
-      el("span", { class: "tw", text: wait ? wait + " waiting on someone" : "Nothing waiting" })));
+  const t = tpamStats(monthOf("tpam")), v = vickiStats(monthOf("vicki")), a = absStats(monthOf("absolute"));
+  main.append(el("div", { class: "jobs" },
+    jobTile("tpam", "TPAM", t.pct, t.board + " of " + t.n + " to board · " + mShort(monthOf("tpam")), t.blockers),
+    jobTile("vicki", "Vicki's", v.pct, v.done + " of " + v.total + " done · " + mShort(monthOf("vicki")), v.blockers),
+    jobTile("absolute", "Absolute", a.pct, a.done + " of " + a.total + " clients · " + mShort(monthOf("absolute")), a.blockers)));
+  const al = alerts();
+  const ul = el("ul", { class: "alerts" });
+  for (const x of al) ul.append(el("li", { class: "alert " + x.cls }, el("span", { class: "a-job", text: { tpam: "TPAM", vicki: "Vicki's", absolute: "Absolute" }[x.job] }), el("span", { class: "a-text", text: x.text }),
+    x.act ? el("button", { type: "button", class: "btn small", text: x.actLabel, onclick: x.act }) : el("button", { type: "button", class: "link", text: "Open", onclick: () => go(x.go) })));
+  if (!al.length) ul.append(el("li", { class: "empty", text: "Nothing needs your attention right now." }));
+  main.append(card("Needs attention", al.length ? String(al.length) : "", ul, notifyButton()));
+  const bl = allBlockers();
+  if (bl.length) {
+    const det = el("details", { class: "card" }, el("summary", { text: "Blockers (" + bl.length + "): " + ["TPAM", "Vicki's", "Absolute"].map(j => j + " " + bl.filter(x => x[0] === j).length).join(" · ") }));
+    const ub = el("ul", { class: "blist" }); for (const [j, t2] of bl) ub.append(el("li", {}, el("b", { text: j + ": " }), t2)); det.append(ub); main.append(det);
   }
-  tiles.append(el("button", { type: "button", class: "tile", onclick: () => go("close") },
-    el("b", { text: String(closeRows("open", "all").length) }), el("span", { class: "tn", text: "Month-end open" }), el("br"),
-    el("span", { class: "tw", text: "Clients and associations not finished" })));
-  main.append(tiles);
-
-  main.append(listCard("h-df", "Do first", doFirst(), "Nothing marked yet. Tap \"☆ Do first\" on any item to put it here."));
-  main.append(recCard());
-  main.append(listCard("h-ds", "Due in the next 3 days", dueSoon(), "Nothing due. Give an item a due date and it shows up here."));
+  main.append(listCard("Do first", allItems().filter(i => !i.done && i.star).sort(sortItems), "Tap \"☆ Do first\" on any to-do to put it here."));
+  const ds = allItems().filter(i => !i.done && !i.star && dueInfo(i.due) && dueInfo(i.due).diff <= 3).sort((x, y) => x.due < y.due ? -1 : 1);
+  if (ds.length) main.append(listCard("Due in the next 3 days", ds, ""));
   main.append(clockCard());
-  const waits = allItems().filter(i => !i.done && i.status === "waiting").sort(sortItems);
-  if (waits.length) {
-    const det = el("details", { class: "card" }, el("summary", { text: "Waiting on someone (" + waits.length + ")" }));
-    const ul = el("ul"); for (const it of waits) ul.append(itemRow(it, { showList: true }));
-    det.append(ul); main.append(det);
+}
+function jobTile(tab, name, p, sub, blockers) {
+  return el("button", { type: "button", class: "jobtile", onclick: () => go(tab) },
+    el("div", { class: "ring sm", style: "--p:" + p }, el("b", { text: p + "%" })),
+    el("div", {}, el("div", { class: "jt-n", text: name }), el("div", { class: "jt-s", text: sub }), blockers ? el("div", { class: "jt-b", text: blockers + " blocker" + (blockers > 1 ? "s" : "") }) : null));
+}
+function notifyButton() {
+  if (!("Notification" in window)) return null;
+  if (Notification.permission === "granted") return el("div", { class: "hint small", text: "Phone/computer notifications are on. They show when the app opens and finds something new." });
+  return el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: "Turn on notifications", onclick: async () => { try { await Notification.requestPermission(); } catch (_) {} render(true); notifyIfNew(true); } }));
+}
+async function notifyIfNew(force) {
+  try {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const al = alerts().filter(a => a.cls === "over" || /Invoice|Reach out/.test(a.text));
+    const key = todayStr() + ":" + al.map(a => a.text).join("|");
+    if (!al.length || (!force && LS.get("hub:notified", "") === key)) return;
+    LS.set("hub:notified", key);
+    const body = al.slice(0, 4).map(a => a.text).join("\n");
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    if (reg) reg.showNotification("To-Do Hub", { body, icon: "icons/icon-192.png", tag: "hub-daily" }); else new Notification("To-Do Hub", { body });
+  } catch (_) {}
+}
+
+/* ================= TPAM ================= */
+const assocs = () => live("assoc").sort((a, b) => (a.order - b.order) || a.code.localeCompare(b.code));
+function tpamRec(p, code) { return DB.tpam.get(p + "-" + code) || { id: p + "-" + code, period: p, code, step: 0, blocker: "", note: "" }; }
+function tpamDue(p) { return setting("tpamdue-" + p, ""); }
+function tpamStats(p) {
+  const as = assocs(), n = as.length; let sum = 0, board = 0, blockers = 0;
+  for (const a of as) { const r = tpamRec(p, a.code); sum += r.step; if (r.step >= 5) board++; if (r.blocker && r.step < 5) blockers++; }
+  return { n, board, blockers, pct: n ? Math.round(sum / (5 * n) * 100) : 0 };
+}
+function renderTpam(main) {
+  const p = monthOf("tpam"), st = tpamStats(p), due = tpamDue(p), di = dueInfo(due);
+  const dueIn = el("input", { type: "date", id: "tpam-due" }); dueIn.value = due;
+  dueIn.addEventListener("change", () => { put("settings", { id: "tpamdue-" + p, value: dueIn.value }); render(true); });
+  const counts = T_STEPS.map((s, i) => [s, assocs().filter(a => tpamRec(p, a.code).step === i).length, T_CLS[i]]).filter(x => x[1]);
+  main.append(monthPicker("tpam", "financials"));
+  main.append(el("section", { class: "card" },
+    bigPct(st.pct, st.board + " of " + st.n + " sent to board" + (st.blockers ? " · " + st.blockers + " blocked" : ""),
+      el("div", { class: "chips" }, ...counts.map(([s, n, c]) => stepChip(n + " " + s, c)))),
+    el("div", { class: "duerow" }, field("Deadline for " + mLabel(p), dueIn), !due ? el("span", { class: "hint small", text: "Set the date these are due." }) : di && st.board < st.n ? el("span", { class: "chip " + di.cls, text: di.label }) : st.board === st.n && st.n ? el("span", { class: "chip step s5", text: "All sent" }) : null)));
+
+  const grid = el("div", { class: "agrid" });
+  for (const a of assocs()) {
+    const r = tpamRec(p, a.code), open = S.open.has("t:" + a.code);
+    const tile = el("button", { type: "button", class: "atile " + T_CLS[r.step] + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("t:" + a.code) : S.open.add("t:" + a.code); render(true); } },
+      el("span", { class: "at-code", text: a.code }), el("span", { class: "at-name", text: a.name }), stepChip(T_STEPS[r.step], T_CLS[r.step]),
+      r.blocker && r.step < 5 ? el("span", { class: "at-blk", text: "⚠ " + r.blocker }) : null);
+    grid.append(tile);
+    if (open) grid.append(tpamDetail(p, a, r));
   }
+  if (!assocs().length) grid.append(el("div", { class: "empty", text: "No associations yet. Add them below." }));
+  main.append(card("Associations", mLabel(p), grid));
+  main.append(recCard());
+  main.append(todoSection("tpam"));
+  main.append(assocManager());
 }
-function listCard(hid, title, its, empty) {
-  const card = el("section", { class: "card", "aria-labelledby": hid }, el("h2", { id: hid }, el("span", { text: title }), el("small", { text: its.length ? its.length + " left" : "" })));
-  const ul = el("ul"); for (const it of its) ul.append(itemRow(it, { showList: true }));
-  if (!its.length) ul.append(el("li", { class: "empty", text: empty }));
-  card.append(ul); return card;
+function tpamDetail(p, a, r) {
+  const save = f => { put("tpam", { ...tpamRec(p, a.code), ...f }); };
+  const steps = el("div", { class: "stepper", role: "group", "aria-label": "Step for " + a.code });
+  T_STEPS.forEach((s, i) => steps.append(el("button", { type: "button", class: (r.step === i ? "on " : "") + T_CLS[i], "aria-pressed": r.step === i ? "true" : "false",
+    onclick: () => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); save(f); render(true); } }, s, r["d" + i] && i ? el("small", { text: shortDate(parseYmd(r["d" + i])) }) : null)));
+  return el("div", { class: "detail-card" },
+    el("div", { class: "dc-h" }, el("b", { text: a.code + " · " + a.name }), el("span", { text: [a.bank, a.cam && "CAM " + a.cam].filter(Boolean).join(" · ") })),
+    steps,
+    el("div", { class: "hint small", text: "Tap the step it's at. The date is stamped for your Better Financial Checklist." }),
+    field("Blocker (what it's waiting on)", textInput("tb-" + p + a.code, r.blocker, v => save({ blocker: v }), "e.g. Waiting on Jeff, missing $430")),
+    field("Notes", textInput("tn-" + p + a.code, r.note, v => save({ note: v }), "")));
 }
+function assocManager() {
+  const det = el("details", { class: "card" }, el("summary", { text: "Manage associations" }));
+  det.append(el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "+ Add association", onclick: () => openQuickAdd("client") })));
+  const ul = el("ul", { class: "entries" });
+  for (const a of assocs()) {
+    const conf = S.confirm === "a:" + a.id;
+    ul.append(el("li", {}, el("span", { text: a.code + " · " + a.name + (a.cam ? " · CAM " + a.cam : "") }),
+      el("button", { type: "button", class: "link", text: conf ? "Tap again to remove" : "Remove", onclick: () => { if (conf) { S.confirm = ""; put("assoc", { ...a, void: true }); } else S.confirm = "a:" + a.id; render(true); } })));
+  }
+  det.append(el("div", { class: "hint small", text: "Removing hides it from new months. Past months keep their history." }), ul);
+  return det;
+}
+function rotDone(key) { const r = DB.rotation.get(key); return new Set(r && r.done ? r.done.split(",").filter(Boolean) : []); }
 function recCard() {
-  const { dow, list } = recOpen();
-  const card = el("section", { class: "card", "aria-labelledby": "h-rec" },
-    el("h2", { id: "h-rec" }, el("span", { text: "TPAM recs in Vantaca" }), el("small", { text: dow === 5 ? "Friday catch-up" : dow >= 1 && dow <= 4 ? DAYS[dow] + " pair" : "Weekend" })));
+  const d = new Date(), dow = d.getDay(), mon = addDays(new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay()), 1), list = [];
+  for (let i = 0; i < 4; i++) { const day = addDays(mon, i); if (day > d) break; const done = rotDone(ymd(day)); for (const [code, name] of ROTATION[day.getDay()]) list.push({ day, key: ymd(day), code, name, done: done.has(code), isToday: ymd(day) === ymd(d) }); }
+  const c = card("Daily Vantaca recs", dow === 5 ? "Friday catch-up" : dow >= 1 && dow <= 4 ? DAYS[dow] + " pair" : "Weekend");
   const todays = list.filter(x => x.isToday), missed = list.filter(x => !x.isToday && !x.done);
-  if (dow === 0 || dow === 6) card.append(el("div", { class: "hint", text: "No rec pair on weekends. Monday is Hillwood + Brighton Place." }));
-  if (dow === 5) card.append(el("div", { class: "hint", text: missed.length ? "Catch up on these from this week:" : "Every rec this week is checked off. Nice." }));
-  for (const x of todays) card.append(recRow(x));
-  if (dow >= 1 && dow <= 5 && missed.length) {
-    if (dow !== 5) card.append(el("div", { class: "subhead", text: "Skipped earlier this week" }));
-    for (const x of missed) card.append(recRow(x));
-  }
-  return card;
+  if (dow === 0 || dow === 6) c.append(el("div", { class: "hint", text: "No rec pair on weekends. Monday is Hillwood + Brighton Place." }));
+  if (dow === 5) c.append(el("div", { class: "hint", text: missed.length ? "Catch up on these from this week:" : "Every rec this week is checked off." }));
+  for (const x of todays) c.append(recRow(x));
+  if (dow >= 1 && dow <= 5 && missed.length) { if (dow !== 5) c.append(el("div", { class: "subhead", text: "Skipped earlier this week" })); for (const x of missed) c.append(recRow(x)); }
+  return c;
 }
 function recRow(x) {
-  const id = "rec-" + x.key + "-" + x.code;
-  const cb = el("input", { type: "checkbox", class: "box", id }); cb.checked = x.done;
-  cb.addEventListener("change", () => {
-    const set = rotDone(x.key); cb.checked ? set.add(x.code) : set.delete(x.code);
-    put("rotation", { id: x.key, done: [...set].join(",") }); render(true);
-  });
-  return el("div", { class: "rec" + (x.done ? " done" : "") }, cb,
-    el("label", { for: id }, el("span", { class: "code", text: x.code }), x.name + (x.isToday ? "" : " · " + DAYS[x.day.getDay()].slice(0, 3))));
+  const id = "rec-" + x.key + "-" + x.code, cb = el("input", { type: "checkbox", class: "box", id }); cb.checked = x.done;
+  cb.addEventListener("change", () => { const s = rotDone(x.key); cb.checked ? s.add(x.code) : s.delete(x.code); put("rotation", { id: x.key, done: [...s].join(",") }); render(true); });
+  return el("div", { class: "rec" + (x.done ? " done" : "") }, cb, el("label", { for: id }, el("span", { class: "code", text: x.code }), x.name + (x.isToday ? "" : " · " + DAYS[x.day.getDay()].slice(0, 3))));
 }
 
-function clockCard() {
-  const r = running();
-  const card = el("section", { class: "card", "aria-labelledby": "h-clock" },
-    el("h2", { id: "h-clock" }, el("span", { text: "Time clock" }), el("small", { text: "Week of " + shortDate(weekStart()) })));
-  const btns = el("div", { class: "clockbtns" });
-  for (const [k, name] of CJOBS) {
-    const on = !!(r && r.job === k);
-    btns.append(el("button", { type: "button", class: "clockbtn" + (on ? " on" : ""), "aria-pressed": on ? "true" : "false",
-      onclick: () => on ? stopClock() : startClock(k) }, name, el("span", { class: "cb-act", text: on ? "Tap to stop" : "Start" })));
-  }
-  card.append(btns, el("div", { class: "running", id: "running", text: runningText() }));
-  const wk = weekHours(), bars = el("div", { class: "bars" });
-  for (const [k, name] of CJOBS) {
-    const t = targetFor(k), h = wk[k] || 0;
-    const row = el("div", { class: "bar" }, el("span", { text: name }), el("span", { class: "bar-v", id: "wk-" + k, text: fmtH(h) + (t ? " of " + t + "h" : "") }));
-    if (t) { const f = el("div", { class: "fill" + (h > t ? " over" : ""), id: "wf-" + k }); f.style.width = Math.min(100, h / t * 100) + "%"; row.append(el("div", { class: "track" }, f)); }
-    bars.append(row);
-  }
-  card.append(bars);
-
-  const det = el("details", {}, el("summary", { text: "Add time by hand or fix an entry" }));
-  if (S.timeOpen) det.open = true;
-  det.addEventListener("toggle", () => { S.timeOpen = det.open; });
-  const job = el("select", { id: "m-job" }, ...CJOBS.map(([k, n]) => el("option", { value: k, text: n })));
-  const date = el("input", { type: "date", id: "m-date" }); date.value = ymd(new Date());
-  const hrs = el("input", { type: "number", id: "m-hrs", min: "0.25", max: "16", step: "0.25", placeholder: "1.5", inputmode: "decimal" });
-  det.append(el("div", { class: "manual" },
-    el("div", { class: "field" }, el("label", { for: "m-job", text: "Job" }), job),
-    el("div", { class: "field" }, el("label", { for: "m-date", text: "Date" }), date),
-    el("div", { class: "field" }, el("label", { for: "m-hrs", text: "Hours" }), hrs),
-    el("button", { type: "button", class: "btn", text: "Add", onclick: () => addManual(job.value, date.value, Number(hrs.value)) })));
-  const ws = weekStart();
-  const entries = liveTime().filter(e => new Date(e.end || Date.now()) > ws).sort((a, b) => a.start < b.start ? 1 : -1);
-  const ul = el("ul", { class: "entries" });
-  for (const e of entries) {
-    const s = new Date(e.start), en = e.end ? new Date(e.end) : null;
-    const txt = DAYS[s.getDay()].slice(0, 3) + " " + shortDate(s) + " · " + jobName(e.job) + " · " + (e.manual ? "added by hand" : fmtTime(s) + "–" + (en ? fmtTime(en) : "now")) + " · " + fmtH(((en || new Date()) - s) / 36e5);
-    const conf = S.confirm === "t:" + e.id;
-    ul.append(el("li", {}, el("span", { text: txt }),
-      el("button", { type: "button", class: "link", text: conf ? "Tap again to remove" : "Remove",
-        onclick: () => { if (conf) { S.confirm = ""; put("time", { ...e, void: true }); render(true); } else { S.confirm = "t:" + e.id; render(true); } } })));
-  }
-  if (!entries.length) ul.append(el("li", { class: "empty", text: "No time logged this week yet." }));
-  det.append(el("div", { class: "subhead", text: "This week" }), ul);
-  card.append(det);
-  return card;
+/* ================= VICKI'S ================= */
+const svcName = k => (V_SVCS.find(s => s[0] === k) || [, k])[1];
+function vDue(w, m) { if (w.start && m < w.start) return false; const mo = Number(m.slice(5)); if (w.freq === "q") return mo % 3 === 0; if (w.freq === "a") return mo === 12; return true; }
+function vComplete(w) { return w.cthru && w.rthru && w.cthru >= w.rthru; }
+function vCell(w, m) {
+  if (w.start && m < w.start) return ["", "Not started yet"];
+  if (!vDue(w, m)) return ["na", "Not due"];
+  if (w.cthru && m <= w.cthru) return ["s5", "Complete"];
+  if (w.rthru && m <= w.rthru) { const s = V_STEPS.find(x => x[0] === w.step) || V_STEPS[0]; return [s[2], "Received · " + s[1]]; }
+  return ["nr", "Not received"];
 }
-function tick() {
-  const r = $("#running"); if (r) r.textContent = runningText();
-  if (!running()) return;
-  const wk = weekHours();
-  for (const [k] of CJOBS) {
-    const v = document.getElementById("wk-" + k), t = targetFor(k), h = wk[k] || 0;
-    if (v) v.textContent = fmtH(h) + (t ? " of " + t + "h" : "");
-    const f = document.getElementById("wf-" + k); if (f && t) { f.style.width = Math.min(100, h / t * 100) + "%"; f.classList.toggle("over", h > t); }
-  }
+function vickiStats(m, svc) {
+  let total = 0, done = 0, blockers = 0;
+  for (const w of live("vwork")) { if (svc && w.svc !== svc) continue; if (!DB.vclients.get(w.client) || DB.vclients.get(w.client).void) continue; if (w.blocker && !vComplete(w)) blockers++; if (!vDue(w, m)) continue; total++; if (w.cthru && w.cthru >= m) done++; }
+  return { total, done, blockers, pct: pct(done, total) };
 }
-function startClock(job) {
-  const t = nowIso(), r = running();
-  if (r) put("time", { ...r, end: t });
-  put("time", { id: newId(), job, start: t, end: "", void: false, manual: false });
-  render(true);
-}
-function stopClock() { const r = running(); if (r) { put("time", { ...r, end: nowIso() }); render(true); } }
-function addManual(job, date, hrs) {
-  if (!date || !(hrs > 0) || hrs > 16) { setStatus("Enter the hours as a number, like 1.5."); return; }
-  setStatus("");
-  const s = parseYmd(date); s.setHours(9, 0, 0, 0);
-  put("time", { id: newId(), job, start: s.toISOString(), end: new Date(s.getTime() + hrs * 36e5).toISOString(), void: false, manual: true });
-  render(true);
-}
-
-/* ---------- lists ---------- */
-function renderList(main, L) {
-  const all = itemsFor(L.key), known = new Set(L.sections.map(s => s[0]));
-  const secs = L.sections.slice();
-  if (all.some(i => !known.has(i.section))) secs.push(["_other", "Other"]);
-  for (const [key, name] of secs) {
-    const its = all.filter(i => key === "_other" ? !known.has(i.section) : i.section === key).sort(sortItems);
-    const open = its.filter(i => !i.done), done = its.filter(i => i.done), sk = L.key + ":" + key;
-    const ul = el("ul");
-    for (const it of open) ul.append(itemRow(it));
-    if (S.showDone.has(sk)) for (const it of done) ul.append(itemRow(it));
-    if (!open.length) ul.append(el("li", { class: "empty", text: done.length ? "All done here." : "Nothing here right now." }));
-    const sec = el("section", { "aria-labelledby": "h-" + sk },
-      el("h2", { id: "h-" + sk }, el("span", { text: name }), el("small", { text: its.length ? open.length + " left" : "" })), ul);
-    if (done.length) sec.append(el("button", { type: "button", class: "link showdone", "aria-expanded": S.showDone.has(sk) ? "true" : "false",
-      text: (S.showDone.has(sk) ? "Hide done (" : "Show done (") + done.length + ")",
-      onclick: () => { S.showDone.has(sk) ? S.showDone.delete(sk) : S.showDone.add(sk); render(true); } }));
-    if (key !== "_other") sec.append(addRow(L.key, key));
+function renderVicki(main) {
+  const m = monthOf("vicki");
+  main.append(monthPicker("vicki", "work month"));
+  const ov = vickiStats(m);
+  main.append(el("section", { class: "card" }, bigPct(ov.pct, ov.done + " of " + ov.total + " done for " + mLabel(m) + (ov.blockers ? " · " + ov.blockers + " blocked" : ""),
+    el("div", { class: "svcbars" }, ...V_SVCS.map(([k, n]) => { const s = vickiStats(m, k); return el("div", { class: "svcbar" }, el("span", { text: n }), el("span", { class: "bar-v", text: s.total ? s.pct + "%" : "–" }), el("div", { class: "track" }, el("div", { class: "fill", style: "width:" + s.pct + "%" }))); })))));
+  const seg = el("div", { class: "seg", role: "tablist" });
+  for (const [k, n] of V_SVCS) seg.append(el("button", { type: "button", role: "tab", "aria-selected": S.vsvc === k ? "true" : "false", onclick: () => { S.vsvc = k; render(true); } }, n, el("small", { text: vickiStats(m, k).pct + "%" })));
+  main.append(seg);
+  const svc = S.vsvc, ws = live("vwork").filter(w => w.svc === svc && DB.vclients.get(w.client) && !DB.vclients.get(w.client).void);
+  const legend = el("div", { class: "legend" }, ...[["s5", "Complete"], ["s1", "Received · working"], ["s2", "Waiting on docs"], ["s4", "Waiting on review"], ["nr", "Not received"], ["na", "Not due"]].map(([c, t]) => el("span", {}, el("i", { class: "cell " + c }), t)));
+  main.append(legend);
+  for (const [soft, sname] of V_SOFT) {
+    const group = ws.filter(w => (DB.vclients.get(w.client).software || "") === soft).sort((a, b) => (a.priority || 2) - (b.priority || 2) || vName(a).localeCompare(vName(b)));
+    if (!group.length) continue;
+    const sec = el("section", {}, el("h2", {}, el("span", { text: sname }), el("small", { text: group.filter(w => w.cthru && w.cthru >= m || !vDue(w, m)).length + " of " + group.length + " done for " + mShort(m) })));
+    for (const w of group) sec.append(vRow(w, m));
     main.append(sec);
   }
-  const note = DB.notes.get(L.key) || {};
-  const ta = el("textarea", { id: "notes-" + L.key, placeholder: "New tasks, things that changed, what's done…" });
-  ta.value = note.text || "";
-  const save = () => put("notes", { id: L.key, text: ta.value });
-  ta.addEventListener("input", () => saveLater("note:" + L.key, save, "ns-" + L.key));
-  ta.addEventListener("blur", () => flush("note:" + L.key, save, "ns-" + L.key));
-  main.append(el("div", { class: "notes" },
-    el("label", { for: "notes-" + L.key, text: "Notes for Claude: " + L.name }),
-    el("div", { class: "hint", text: "Write anything here, then tell Claude \"check my list.\"" }), ta, el("div", { class: "saved", id: "ns-" + L.key })));
+  if (!ws.length) main.append(el("div", { class: "empty", text: "No " + svcName(svc).toLowerCase() + " clients yet. Add one below." }));
+  if (svc === "books") main.append(workLocatorCard());
+  main.append(todoSection("vicki"));
+}
+const vName = w => (DB.vclients.get(w.client) || {}).name || w.client;
+function vRow(w, m) {
+  const c = DB.vclients.get(w.client), open = S.open.has("v:" + w.id), months = [];
+  for (let i = 11; i >= 0; i--) months.push(addM(m, -i));
+  const working = w.rthru && (!w.cthru || w.cthru < w.rthru), stp = V_STEPS.find(x => x[0] === w.step) || V_STEPS[0];
+  const strip = el("div", { class: "strip", "aria-hidden": "true" }, ...months.map(x => { const [cls, t] = vCell(w, x); return el("i", { class: "cell " + cls + (x === m ? " cur" : ""), title: mLabel(x) + ": " + t }, el("small", { text: MONTHS[Number(x.slice(5)) - 1][0] })); }));
+  const status = w.cthru ? "Complete through " + mShort(w.cthru) : "Nothing complete yet";
+  const row = el("button", { type: "button", class: "vrow" + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("v:" + w.id) : S.open.add("v:" + w.id); render(true); } },
+    el("div", { class: "vr-h" }, el("span", { class: "vr-n", text: c.name }), w.priority === 1 ? el("span", { class: "chip over", text: "High" }) : w.priority === 3 ? el("span", { class: "chip", text: "Low" }) : null,
+      working ? stepChip(stp[1], stp[2]) : vComplete(w) ? stepChip("Printed & complete", "s5") : stepChip("Waiting to receive", "nr")),
+    strip,
+    el("div", { class: "vr-s", text: status + (working ? " · received through " + mShort(w.rthru) : "") + (w.freq === "q" ? " · quarterly" : w.freq === "a" ? " · annual" : "") }),
+    blockerLine(!vComplete(w) && w.blocker));
+  const wrap = el("div", { class: "vwrap" }, row);
+  if (open) wrap.append(vDetail(w, c));
+  return wrap;
+}
+function vDetail(w, c) {
+  const save = f => put("vwork", { ...DB.vwork.get(w.id), ...f });
+  const lastDue = p => { let x = p; for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, 1); return x; };
+  const nextDue = p => lastDue(p ? addM(p, 1) : (w.start || prevMonth()));
+  const steps = el("div", { class: "stepper" });
+  V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.step === k ? "on " : "") + cls, "aria-pressed": w.step === k ? "true" : "false", onclick: () => { save({ step: k }); render(true); } }, n)));
+  steps.append(el("button", { type: "button", class: "s5", onclick: () => { if (!w.rthru) { setStatus("Mark a month received first."); return; } save({ cthru: w.rthru, step: "" }); render(true); } }, "Printed & complete"));
+  const mi = (id, v, f) => { const i = el("input", { type: "month", id }); i.value = v || ""; i.addEventListener("change", () => { save({ [f]: i.value }); render(true); }); return i; };
+  const soft = el("select", { id: "vs-" + w.id }, ...V_SOFT.map(([k, n]) => el("option", { value: k, text: n }))); soft.value = c.software || "";
+  soft.addEventListener("change", () => { put("vclients", { ...c, software: soft.value }); render(true); });
+  const pri = el("select", { id: "vp-" + w.id }, ...PRIORITY.map(([k, n]) => el("option", { value: String(k), text: n }))); pri.value = String(w.priority || 2);
+  pri.addEventListener("change", () => { save({ priority: Number(pri.value) }); render(true); });
+  const freq = el("select", { id: "vf-" + w.id }, el("option", { value: "m", text: "Monthly" }), el("option", { value: "q", text: "Quarterly" }), el("option", { value: "a", text: "Annual" })); freq.value = w.freq || "m";
+  freq.addEventListener("change", () => { save({ freq: freq.value }); render(true); });
+  const conf = S.confirm === "vr:" + w.id;
+  return el("div", { class: "detail-card" },
+    el("div", { class: "btnrow" },
+      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => { save({ rthru: nextDue(w.rthru), step: w.rthru && w.cthru && w.cthru < w.rthru ? w.step : "" }); render(true); } }),
+      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); save({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, step: "" }); render(true); } })),
+    el("div", { class: "subhead", text: "Step for the received work" }), steps,
+    el("div", { class: "row2" }, field("Complete through", mi("vd-" + w.id, w.cthru, "cthru")), field("Received through", mi("vrc-" + w.id, w.rthru, "rthru")), field("Priority", pri), field("Software", soft), field("How often", freq), field("Started", mi("vst-" + w.id, w.start, "start"))),
+    field("Blocker", textInput("vb-" + w.id, w.blocker, v => save({ blocker: v }), "e.g. Missing September statement")),
+    field("Notes", textInput("vn-" + w.id, w.note, v => save({ note: v }), "")),
+    el("button", { type: "button", class: "link", text: conf ? "Tap again to take " + c.name + " off " + svcName(w.svc) : "Remove from " + svcName(w.svc), onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "vr:" + w.id; render(true); } }));
+}
+function workLocatorCard() {
+  const rows = SERVER.wl || [];
+  const c = card("Work Locator (office sheet)", rows.length ? rows.length + " open" : "");
+  if (SERVER.wlError) c.append(el("div", { class: "hint", text: "Couldn't read the Work Locator: " + SERVER.wlError }));
+  else if (!config) c.append(el("div", { class: "hint", text: "Shows your open rows from the office Work Locator once the app is connected to your Sheet." }));
+  else if (!rows.length) c.append(el("div", { class: "hint", text: "No open rows for you or Tori in Bookkeeping 2026." }));
+  const ul = el("ul", { class: "wl" });
+  for (const r of rows) ul.append(el("li", {}, el("div", { class: "wl-h" }, el("b", { text: r.client }), el("span", { class: "chip", text: r.status })), el("div", { class: "vr-s", text: [r.work, r.bookkeeper !== "Jodi" ? "was " + r.bookkeeper + "'s" : "", r.provided && "provided " + r.provided, r.days && r.days + " days in office"].filter(Boolean).join(" · ") }), r.notes ? el("div", { class: "vr-s", text: r.notes }) : null));
+  c.append(ul, el("div", { class: "hint small", text: "Read-only. Update the Work Locator itself at the office." }));
+  return c;
 }
 
+/* ================= ABSOLUTE ================= */
+const aClients = () => live("aclients").sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+const aSteps = c => c.type === "va" ? A_VA : A_BOOKS;
+function aRec(c, p) { return DB.awork.get(c.id + "-" + p) || { id: c.id + "-" + p, client: c.id, period: p, step: 0, blocker: "", note: "", invoiced: "" }; }
+const aDone = (c, p) => aRec(c, p).step >= aSteps(c).length - 1;
+function absDue(c, p) { const day = c.dueDay || (c.type === "va" ? 3 : 15); return ymd(new Date(Number(p.slice(0, 4)), Number(p.slice(5)), day)); }
+function absOpenMonths(c) { const out = [], end = prevMonth(); if (!c.start) return aDone(c, end) ? [] : [end]; for (let p = c.start; p <= end; p = addM(p, 1)) if (!aDone(c, p)) out.push(p); return out; }
+function absStats(p) {
+  let total = 0, done = 0, blockers = 0;
+  for (const c of aClients()) { if (c.start && p < c.start) continue; total++; if (aDone(c, p)) done++; if (c.blocker || aRec(c, p).blocker) blockers++; }
+  return { total, done, blockers, pct: pct(done, total) };
+}
+function renderAbsolute(main) {
+  const p = monthOf("absolute"), st = absStats(p);
+  main.append(monthPicker("absolute", "month closing"));
+  const backlog = aClients().reduce((n, c) => n + absOpenMonths(c).filter(x => x < p).length, 0);
+  main.append(el("section", { class: "card" }, bigPct(st.pct, st.done + " of " + st.total + " clients done for " + mLabel(p) + (backlog ? " · " + backlog + " past-due month" + (backlog > 1 ? "s" : "") : "") + (st.blockers ? " · " + st.blockers + " blocked" : ""))));
+  const books = aClients().filter(c => c.type !== "va"), va = aClients().filter(c => c.type === "va");
+  if (books.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Bookkeeping clients" }), el("small", { text: "classify daily · reconcile · send financials" }))); for (const c of books) s.append(absBooks(c, p)); main.append(s); }
+  if (va.length) { const s = el("section", {}, el("h2", {}, el("span", { text: "Assistant clients" }), el("small", { text: "reach out · do the job · invoice" }))); for (const c of va) s.append(absVa(c, p)); main.append(s); }
+  main.append(crmCard());
+  main.append(socialCard());
+  main.append(todoSection("absolute"));
+}
+function absHead(c, extra) {
+  return el("div", {}, el("div", { class: "ac-h" }, el("div", {}, el("b", { class: "ac-n", text: c.name }), el("div", { class: "vr-s", text: [c.services, c.fee ? "$" + c.fee + (c.type === "va" ? "/job" : "/mo") : ""].filter(Boolean).join(" · ") })), extra || null), blockerLine(c.blocker));
+}
+const notYet = (c, p) => c.start && p < c.start ? el("div", { class: "hint", text: "Starts " + mLabel(c.start) + ". Nothing due for " + mLabel(p) + "." }) : null;
+function absBooks(c, p) {
+  const r = aRec(c, p), steps = A_BOOKS, tm = thisMonth(), cur = aRec(c, tm), di = dueInfo(absDue(c, p));
+  const save = (per, f) => put("awork", { ...aRec(c, per), ...f });
+  const classified = c.lastClassified === todayStr();
+  const past = absOpenMonths(c).filter(x => x < p);
+  const box = el("div", { class: "acard" },
+    absHead(c, notYet(c, p) ? null : aDone(c, p) ? stepChip("Done", "s5") : di ? el("span", { class: "chip " + di.cls, text: di.label }) : null),
+    el("div", { class: "acts2" },
+      el("button", { type: "button", class: "btn " + (classified ? "ghost" : ""), text: classified ? "✓ Classified today" : "Classify today", onclick: () => { put("aclients", { ...c, lastClassified: classified ? "" : todayStr() }); render(true); } }),
+      el("button", { type: "button", class: "btn " + (cur.invoiced ? "ghost" : "warn"), text: cur.invoiced ? "✓ " + mShort(tm) + " invoiced " + shortDate(parseYmd(cur.invoiced)) : "Invoice " + mShort(tm), onclick: () => { save(tm, { invoiced: cur.invoiced ? "" : todayStr() }); render(true); } })),
+    notYet(c, p) || el("div", { class: "subhead", text: mLabel(p) + " close" }),
+    notYet(c, p) ? null : stepper(steps, r.step, i => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); save(p, f); render(true); }, r),
+    past.length ? el("div", { class: "pastdue" }, el("b", { text: "Past months still due: " }), ...past.map(x => el("button", { type: "button", class: "chip over", text: mShort(x), onclick: () => { S.m.absolute = x; render(true); } }))) : null,
+    notYet(c, p) ? null : field(mShort(p) + " blocker", textInput("ab-" + c.id + p, r.blocker, v => save(p, { blocker: v }), "Anything holding up this month")),
+    clientSettings(c));
+  return box;
+}
+function absVa(c, p) {
+  const r = aRec(c, p), di = dueInfo(absDue(c, p)), save = f => put("awork", { ...aRec(c, p), ...f });
+  if (notYet(c, p)) return el("div", { class: "acard" }, absHead(c), notYet(c, p), clientSettings(c));
+  return el("div", { class: "acard" },
+    absHead(c, aDone(c, p) ? stepChip("Invoiced", "s5") : di ? el("span", { class: "chip " + di.cls, text: di.label }) : null),
+    el("div", { class: "subhead", text: mLabel(p) + " job" }),
+    stepper(A_VA, r.step, i => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); if (i === 4) f.invoiced = todayStr(); save(f); render(true); }, r),
+    r.step === 3 ? el("div", { class: "alert over" }, el("span", { class: "a-text", text: "Job's done. Send the invoice." })) : null,
+    field("What's the job?", textInput("aj-" + c.id + p, r.note, v => save({ note: v }), "e.g. Print tracker invoices")),
+    field("Blocker", textInput("ab-" + c.id + p, r.blocker, v => save({ blocker: v }), "")),
+    clientSettings(c));
+}
+function stepper(steps, cur, onPick, r) {
+  const s = el("div", { class: "stepper" });
+  steps.forEach((n, i) => s.append(el("button", { type: "button", class: (cur === i ? "on " : "") + (i === steps.length - 1 ? "s5" : i ? "s1" : "s0"), "aria-pressed": cur === i ? "true" : "false", onclick: () => onPick(i) }, n, r && r["d" + i] && i ? el("small", { text: shortDate(parseYmd(r["d" + i])) }) : null)));
+  return s;
+}
+function clientSettings(c) {
+  const det = el("details", { class: "mini" }, el("summary", { text: "Client details" }));
+  if (S.open.has("ac:" + c.id)) det.open = true;
+  det.addEventListener("toggle", () => det.open ? S.open.add("ac:" + c.id) : S.open.delete("ac:" + c.id));
+  const save = f => put("aclients", { ...DB.aclients.get(c.id), ...f });
+  const start = el("input", { type: "month", id: "acs-" + c.id }); start.value = c.start || ""; start.addEventListener("change", () => { save({ start: start.value }); render(true); });
+  const due = el("input", { type: "number", id: "acd-" + c.id, min: "1", max: "28", inputmode: "numeric" }); due.value = c.dueDay || (c.type === "va" ? 3 : 15); due.addEventListener("change", () => { save({ dueDay: Number(due.value) || 15 }); render(true); });
+  const fee = el("input", { type: "number", id: "acf-" + c.id, min: "0", step: "1", inputmode: "decimal" }); fee.value = c.fee || ""; fee.addEventListener("change", () => { save({ fee: Number(fee.value) || 0 }); render(true); });
+  const conf = S.confirm === "ac:" + c.id;
+  det.append(field("What I do for them", textInput("acv-" + c.id, c.services, v => save({ services: v }), "")),
+    el("div", { class: "row2" }, field(c.type === "va" ? "First month" : "First month due (cleanup start)", start), field("Due day of next month", due), field(c.type === "va" ? "Fee per job ($)" : "Monthly fee ($)", fee)),
+    field("Ongoing blocker", textInput("acb-" + c.id, c.blocker, v => save({ blocker: v }), "")),
+    el("button", { type: "button", class: "link", text: conf ? "Tap again to archive " + c.name : "Archive client", onclick: () => { if (conf) { S.confirm = ""; save({ void: true }); } else S.confirm = "ac:" + c.id; render(true); } }));
+  return det;
+}
+function crmCard() {
+  const rows = SERVER.crm || [], t = todayStr();
+  const due = rows.filter(r => r.next && r.next <= t && !/stalled|inactive|on hold/i.test(r.status)).sort((a, b) => a.next < b.next ? -1 : 1);
+  const stats = {}; for (const r of rows) { const s = r.status || "No status"; stats[s] = (stats[s] || 0) + 1; }
+  const c = card("CRM follow-ups", rows.length ? due.length + " due" : "");
+  if (SERVER.crmError) c.append(el("div", { class: "hint", text: "Couldn't read your CRM sheet: " + SERVER.crmError }));
+  else if (!config) { c.append(el("div", { class: "hint", text: "Your CRM shows here once the app is connected to your Sheet." })); return c; }
+  const chips = el("div", { class: "filters" }, el("button", { type: "button", "aria-pressed": S.crmFilter === "due" ? "true" : "false", text: "Due (" + due.length + ")", onclick: () => { S.crmFilter = "due"; render(true); } }),
+    ...Object.entries(stats).sort((a, b) => b[1] - a[1]).map(([s, n]) => el("button", { type: "button", "aria-pressed": S.crmFilter === s ? "true" : "false", text: s + " (" + n + ")", onclick: () => { S.crmFilter = s; render(true); } })));
+  c.append(chips);
+  const list = S.crmFilter === "due" ? due : rows.filter(r => (r.status || "No status") === S.crmFilter);
+  const ul = el("ul", { class: "crm" });
+  for (const r of list) {
+    const k = "crm:" + r.row, open = S.open.has(k), di = dueInfo(r.next);
+    const li = el("li", {}, el("button", { type: "button", class: "crm-row", "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete(k) : S.open.add(k); render(true); } },
+      el("div", {}, el("b", { text: r.company }), el("div", { class: "vr-s", text: [r.contact, r.service].filter(Boolean).join(" · ") })), di ? el("span", { class: "chip " + di.cls, text: di.label }) : null));
+    if (open) {
+      const nx = el("input", { type: "date", id: "cn-" + r.row }); nx.value = r.next || ""; nx.addEventListener("change", () => { crmPut(r, { next: nx.value }); render(true); });
+      li.append(el("div", { class: "detail-card" },
+        el("div", { class: "vr-s", text: r.notes || "" }),
+        el("div", { class: "contact" }, r.phone ? el("a", { href: "tel:" + r.phone.replace(/[^\d+]/g, ""), text: "Text/call " + r.phone }) : null, r.email ? el("a", { href: "mailto:" + r.email, text: r.email }) : null),
+        el("div", { class: "vr-s", text: "Last contact: " + (r.last || "—") + " · " + (r.category || "") + (r.how ? " · " + r.how : "") }),
+        el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Contacted today", onclick: () => { const gap = CRM_GAP[r.category] || 7; crmPut(r, { last: todayStr(), next: ymd(addDays(new Date(), gap)) }); render(true); } })),
+        field("Next follow-up", nx)));
+    }
+    ul.append(li);
+  }
+  if (!list.length) ul.append(el("li", { class: "empty", text: S.crmFilter === "due" ? "No follow-ups due today." : "Nobody in this group." }));
+  c.append(ul, el("div", { class: "hint small", text: "\"Contacted today\" updates Last Contact and Next Follow-Up in your CRM sheet." }));
+  return c;
+}
+function socialCard() {
+  const posts = live("social").sort((a, b) => (a.status === "posted") - (b.status === "posted") || (a.date || "9999").localeCompare(b.date || "9999"));
+  const open = posts.filter(p => p.status !== "posted");
+  const c = card("Social media", open.length + " to post");
+  const ul = el("ul", { class: "crm" });
+  for (const p of posts) {
+    if (p.status === "posted" && !S.showDone.has("social")) continue;
+    const k = "so:" + p.id, isOpen = S.open.has(k), di = p.status !== "posted" ? dueInfo(p.date) : null;
+    const st = SOCIAL.find(s => s[0] === p.status) || SOCIAL[0];
+    const li = el("li", {}, el("button", { type: "button", class: "crm-row", "aria-expanded": isOpen ? "true" : "false", onclick: () => { isOpen ? S.open.delete(k) : S.open.add(k); render(true); } },
+      el("div", {}, el("b", { text: p.title }), el("div", { class: "vr-s", text: [p.platform, p.date && fmtDay(p.date)].filter(Boolean).join(" · ") })), el("span", { class: "chip " + (p.status === "posted" ? "step s5" : di ? di.cls : ""), text: di && p.status === "scheduled" ? di.label : st[1] })));
+    if (isOpen) {
+      const save = f => put("social", { ...DB.social.get(p.id), ...f });
+      const date = el("input", { type: "date", id: "sd-" + p.id }); date.value = p.date || ""; date.addEventListener("change", () => { save({ date: date.value }); render(true); });
+      const plat = el("select", { id: "sp-" + p.id }, ...["Facebook", "Instagram", "Facebook + Instagram", "LinkedIn", "Google Business"].map(x => el("option", { value: x, text: x }))); plat.value = p.platform || "Facebook";
+      plat.addEventListener("change", () => { save({ platform: plat.value }); render(true); });
+      li.append(el("div", { class: "detail-card" }, el("div", { class: "stepper" }, ...SOCIAL.map(([k2, n]) => el("button", { type: "button", class: (p.status === k2 ? "on " : "") + (k2 === "posted" ? "s5" : "s1"), onclick: () => { save({ status: k2, date: k2 === "posted" && !p.date ? todayStr() : p.date }); render(true); } }, n))),
+        el("div", { class: "row2" }, field("Post date", date), field("Where", plat)), field("Notes", textInput("sn-" + p.id, p.note, v => save({ note: v }), ""))));
+    }
+    ul.append(li);
+  }
+  if (!posts.length) ul.append(el("li", { class: "empty", text: "No posts yet." }));
+  const nt = el("input", { type: "text", id: "so-new", placeholder: "New post idea", maxlength: 120 });
+  const add = () => { const v = nt.value.trim(); if (!v) return; nt.value = ""; put("social", { id: "s" + newId(), title: v, platform: "Facebook", date: "", status: "idea", note: "", void: false }); render(true); };
+  nt.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); add(); } });
+  const posted = posts.length - open.length;
+  c.append(ul, posted ? el("button", { type: "button", class: "link", text: (S.showDone.has("social") ? "Hide" : "Show") + " posted (" + posted + ")", onclick: () => { S.showDone.has("social") ? S.showDone.delete("social") : S.showDone.add("social"); render(true); } }) : null,
+    el("div", { class: "add" }, nt, el("button", { type: "button", class: "btn", text: "Add", onclick: add })));
+  return c;
+}
+
+
+/* ================= QUICK ADD (tasks + clients) ================= */
+const QA_JOBS = [["tpam", "TPAM"], ["vicki", "Vicki's"], ["absolute", "Absolute"], ["personal", "Personal"]];
+function openQuickAdd(kind) { S.qa = { kind, job: QA_JOBS.some(j => j[0] === S.tab) ? S.tab : "tpam" }; render(true); const f = document.querySelector("#qa-first"); if (f) f.focus(); }
+function quickAddPanel() {
+  if (!S.qa) return null;
+  const q = S.qa, close = () => { S.qa = null; render(true); };
+  const jobSel = el("select", { id: "qa-job" }, ...QA_JOBS.filter(j => q.kind === "task" || j[0] !== "personal").map(([k, n]) => el("option", { value: k, text: n }))); jobSel.value = q.job === "personal" && q.kind === "client" ? "absolute" : q.job;
+  jobSel.addEventListener("change", () => { S.qa.job = jobSel.value; render(true); });
+  const kinds = el("div", { class: "seg small" }, ...[["task", "New task"], ["client", "New client"]].map(([k, n]) => el("button", { type: "button", "aria-selected": q.kind === k ? "true" : "false", onclick: () => { S.qa.kind = k; render(true); } }, n)));
+  const box = el("div", { class: "qa", role: "dialog", "aria-label": "Add" }, el("div", { class: "qa-h" }, kinds, el("button", { type: "button", class: "link", text: "Close", onclick: close })), field(q.kind === "task" ? "For" : "Job", jobSel));
+  const job = jobSel.value;
+  if (q.kind === "task") {
+    const title = el("input", { type: "text", id: "qa-first", placeholder: "What needs doing?", maxlength: 200 });
+    const secs = job === "tpam" ? [["follow", "Follow-ups"], ["other", "Other TPAM"]] : job === "vicki" ? [["office", "Office to-dos"]] : job === "absolute" ? [["absolute", "Absolute to-dos"]] : LISTS[2].sections.filter(x => x[0] !== "absolute");
+    const sec = el("select", { id: "qa-sec" }, ...secs.map(([k, n]) => el("option", { value: k, text: n })));
+    const due = el("input", { type: "date", id: "qa-due" });
+    const star = el("input", { type: "checkbox", id: "qa-star" });
+    const add = () => { const v = title.value.trim(); if (!v) { setStatus("Type the task first."); return; } setStatus("");
+      put("items", { id: newId(), list: job === "absolute" || job === "personal" ? "life" : job, section: sec.value, title: v, detail: "", done: false, update: "", due: due.value, star: star.checked, order: Date.now(), by: "jodi", createdAt: nowIso() });
+      title.value = ""; due.value = ""; star.checked = false; setStatus("Added: " + v); title.focus(); renderTabs(); };
+    title.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); add(); } });
+    box.append(field("Task", title), el("div", { class: "row2" }, field("List", sec), field("Due date (optional)", due)), el("label", { class: "chk" }, star, " Do first"),
+      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add task", onclick: add }), el("button", { type: "button", class: "btn ghost", text: "Done", onclick: close })));
+  } else if (job === "tpam") {
+    const code = el("input", { type: "text", id: "qa-first", placeholder: "e.g. BPC", maxlength: 10 }), name = el("input", { type: "text", id: "qa-name", maxlength: 80 }), bank = el("input", { type: "text", id: "qa-bank", maxlength: 40 }), cam = el("input", { type: "text", id: "qa-cam", maxlength: 40 });
+    box.append(el("div", { class: "row2" }, field("Code", code), field("Association name", name), field("Bank", bank), field("CAM", cam)),
+      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add association", onclick: () => { const c = code.value.trim().toUpperCase(); if (!c || !name.value.trim()) { setStatus("Add a code and a name."); return; }
+        put("assoc", { id: c, code: c, name: name.value.trim(), bank: bank.value.trim(), cam: cam.value.trim(), order: assocs().length + 1, void: false }); setStatus("Added " + c + "."); S.qa = null; go("tpam"); } })));
+  } else if (job === "vicki") {
+    const existing = live("vclients").sort((a, b) => a.name.localeCompare(b.name));
+    const pick = el("select", { id: "qa-pick" }, el("option", { value: "", text: "New client…" }), ...existing.map(c => el("option", { value: c.id, text: c.name })));
+    const name = el("input", { type: "text", id: "qa-first", placeholder: "Client name", maxlength: 80 });
+    const soft = el("select", { id: "qa-soft" }, ...V_SOFT.map(([k, n]) => el("option", { value: k, text: n })));
+    const pri = el("select", { id: "qa-pri" }, ...PRIORITY.map(([k, n]) => el("option", { value: String(k), text: n }))); pri.value = "2";
+    const recv = el("input", { type: "month", id: "qa-rec" });
+    const boxes = V_SVCS.map(([k, n]) => { const cb = el("input", { type: "checkbox", id: "qa-s-" + k }); if (k === S.vsvc) cb.checked = true; return [k, cb, el("label", { class: "chk" }, cb, " " + n)]; });
+    box.append(field("Client name", name), field("Or add a service to an existing client", pick), el("div", { class: "subhead", text: "What you do for them" }), el("div", { class: "chks" }, ...boxes.map(b => b[2])),
+      el("div", { class: "row2" }, field("Software", soft), field("Priority", pri), field("Received through (optional)", recv)),
+      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add client", onclick: () => {
+        let cid = pick.value;
+        if (!cid) { const n = name.value.trim(); if (!n) { setStatus("Type the client's name."); return; } cid = "c" + newId(); put("vclients", { id: cid, name: n, software: soft.value, void: false }); }
+        let any = false;
+        for (const [k, cb] of boxes) if (cb.checked) { any = true; const id = k + "-" + cid, ex = DB.vwork.get(id); put("vwork", ex ? { ...ex, void: false } : { id, client: cid, svc: k, freq: "m", start: recv.value || "", cthru: "", rthru: recv.value || "", step: "", priority: Number(pri.value), blocker: "", note: "", void: false }); }
+        if (!any) { setStatus("Pick at least one service."); return; }
+        setStatus("Added."); S.qa = null; go("vicki"); } })));
+  } else {
+    const name = el("input", { type: "text", id: "qa-first", maxlength: 80 });
+    const type = el("select", { id: "qa-type" }, el("option", { value: "books", text: "Monthly bookkeeping" }), el("option", { value: "va", text: "Assistant / per job" }));
+    const svc = el("input", { type: "text", id: "qa-svc", maxlength: 120, placeholder: "e.g. Monthly bookkeeping, payroll records" });
+    const fee = el("input", { type: "number", id: "qa-fee", min: "0", inputmode: "decimal" });
+    const start = el("input", { type: "month", id: "qa-start" }); start.value = prevMonth();
+    box.append(field("Client name", name), el("div", { class: "row2" }, field("Type", type), field("Fee ($)", fee)), field("What I do for them", svc), field("First month due (earlier for cleanup)", start),
+      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Add client", onclick: () => {
+        if (!name.value.trim()) { setStatus("Type the client's name."); return; }
+        put("aclients", { id: "a" + newId(), name: name.value.trim(), type: type.value, services: svc.value.trim(), start: start.value || prevMonth(), dueDay: type.value === "va" ? 3 : 15, fee: Number(fee.value) || 0, order: aClients().length + 1, void: false });
+        setStatus("Added."); S.qa = null; go("absolute"); } })));
+  }
+  return box;
+}
+
+/* ================= TO-DOS (per job + Personal) ================= */
+const allItems = () => live("items").filter(i => i.title);
+const itemsFor = list => allItems().filter(i => i.list === list);
+const listName = k => (LISTS.find(l => l.key === k) || {}).name || k;
+function sortItems(a, b) { const da = a.due || "9999", db = b.due || "9999"; return (a.done - b.done) || ((b.star ? 1 : 0) - (a.star ? 1 : 0)) || (da < db ? -1 : da > db ? 1 : 0) || ((a.order || 0) - (b.order || 0)); }
+function todoSection(job) {
+  const map = { tpam: ["tpam", ["follow", "other"]], vicki: ["vicki", ["office"]], absolute: ["life", ["absolute"]] }[job];
+  const [list, secs] = map, L = LISTS.find(l => l.key === list);
+  const wrap = el("div", {});
+  for (const [key, name] of L.sections.filter(s => secs.includes(s[0]))) wrap.append(listSection(L, key, name));
+  return wrap;
+}
+function renderPersonal(main) {
+  const L = LISTS.find(l => l.key === "life");
+  for (const [key, name] of L.sections.filter(s => s[0] !== "absolute")) main.append(listSection(L, key, name));
+  const note = DB.notes.get("life") || {};
+  const ta = el("textarea", { id: "notes-life", placeholder: "New tasks, things that changed, what's done…" }); ta.value = note.text || "";
+  const save = () => put("notes", { id: "life", text: ta.value });
+  ta.addEventListener("input", () => saveLater("note:life", save, "ns-life")); ta.addEventListener("blur", () => flush("note:life", save, "ns-life"));
+  main.append(el("div", { class: "notes" }, el("label", { for: "notes-life", text: "Notes for Claude" }), el("div", { class: "hint", text: "Write anything here, then tell Claude \"check my list.\"" }), ta, el("div", { class: "saved", id: "ns-life" })));
+}
+function listSection(L, key, name) {
+  const its = itemsFor(L.key).filter(i => i.section === key).sort(sortItems), open = its.filter(i => !i.done), done = its.filter(i => i.done), sk = L.key + ":" + key;
+  const ul = el("ul");
+  for (const it of open) ul.append(itemRow(it));
+  if (S.showDone.has(sk)) for (const it of done) ul.append(itemRow(it));
+  if (!open.length) ul.append(el("li", { class: "empty", text: done.length ? "All done here." : "Nothing here right now." }));
+  const sec = el("section", {}, el("h2", {}, el("span", { text: name }), el("small", { text: its.length ? open.length + " left" : "" })), ul);
+  if (done.length) sec.append(el("button", { type: "button", class: "link", text: (S.showDone.has(sk) ? "Hide done (" : "Show done (") + done.length + ")", onclick: () => { S.showDone.has(sk) ? S.showDone.delete(sk) : S.showDone.add(sk); render(true); } }));
+  sec.append(addRow(L.key, key));
+  return sec;
+}
+function listCard(title, its, empty) {
+  const c = card(title, its.length ? its.length + " left" : ""), ul = el("ul");
+  for (const it of its) ul.append(itemRow(it, { showList: true }));
+  if (!its.length) ul.append(el("li", { class: "empty", text: empty }));
+  c.append(ul); return c;
+}
+function patch(id, fields, keepFocus) { const it = DB.items.get(id); if (!it) return; if (fields.done) S.edit.delete(id); put("items", { ...it, ...fields, updatedBy: "jodi" }); if (!keepFocus) render(true); else mark("s-" + id, "Saved"); }
 function itemRow(it, opts) {
   opts = opts || {};
   const id = it.id, sfx = opts.showList ? "-t" : "", editing = S.edit.has(id), di = dueInfo(it.due);
   const cb = el("input", { type: "checkbox", class: "box", id: "cb-" + id + sfx, "aria-labelledby": "t-" + id + sfx }); cb.checked = !!it.done;
   cb.addEventListener("change", () => patch(id, { done: cb.checked, doneAt: cb.checked ? nowIso() : "" }));
-  const st = STATUS.find(s => s[0] && s[0] === it.status);
-  const chips = el("div", { class: "chips" },
-    opts.showList ? el("span", { class: "chip", text: listName(it.list) }) : null,
-    it.star && !opts.showList ? el("span", { class: "chip star", text: "★ Do first" }) : null,
-    di ? el("span", { class: "chip " + di.cls, text: di.label }) : null,
-    st ? el("span", { class: "chip wait", text: st[1] }) : null);
-  const body = el("div", { class: "body" },
-    el("label", { class: "title", id: "t-" + id + sfx, for: cb.id, text: it.title }),
-    it.detail ? el("div", { class: "detail", text: it.detail }) : null,
-    chips.childNodes.length ? chips : null,
-    !editing && it.update && it.update.trim() ? el("div", { class: "latest", text: it.update.trim() }) : null);
+  const chips = el("div", { class: "chips" }, opts.showList ? el("span", { class: "chip", text: it.list === "life" && it.section === "absolute" ? "Absolute" : listName(it.list) }) : null,
+    it.star && !opts.showList ? el("span", { class: "chip star", text: "★ Do first" }) : null, di ? el("span", { class: "chip " + di.cls, text: di.label }) : null);
+  const body = el("div", { class: "body" }, el("label", { class: "title", id: "t-" + id + sfx, for: cb.id, text: it.title }), it.detail ? el("div", { class: "detail", text: it.detail }) : null,
+    chips.childNodes.length ? chips : null, !editing && it.update && it.update.trim() ? el("div", { class: "latest", text: it.update.trim() }) : null);
   if (!it.done) body.append(el("div", { class: "acts" },
     el("button", { type: "button", class: "link", "aria-pressed": it.star ? "true" : "false", text: it.star ? "★ Do first" : "☆ Do first", onclick: () => patch(id, { star: !it.star }) }),
-    el("button", { type: "button", class: "link", "aria-expanded": editing ? "true" : "false", text: editing ? "Close" : "Update / due date",
-      onclick: () => { editing ? S.edit.delete(id) : S.edit.add(id); render(true); } })));
-  if (editing) body.append(editor(it));
+    el("button", { type: "button", class: "link", "aria-expanded": editing ? "true" : "false", text: editing ? "Close" : "Update / due date", onclick: () => { editing ? S.edit.delete(id) : S.edit.add(id); render(true); } })));
+  if (editing) {
+    const ta = el("textarea", { id: "u-" + id, placeholder: "What's the latest?" }); ta.value = it.update || "";
+    const save = () => { const cur = DB.items.get(id); if (cur) put("items", { ...cur, update: ta.value, updatedBy: "jodi" }); };
+    ta.addEventListener("input", () => saveLater("item:" + id, save, "s-" + id)); ta.addEventListener("blur", () => flush("item:" + id, save, "s-" + id));
+    const due = el("input", { type: "date", id: "d-" + id }); due.value = it.due || ""; due.addEventListener("change", () => patch(id, { due: due.value }, true));
+    body.append(el("div", { class: "editor" }, el("div", {}, el("label", { for: ta.id, text: "Latest update" }), ta, el("div", { class: "saved", id: "s-" + id })),
+      field("Due date", due), el("button", { type: "button", class: "btn ghost", text: "Done editing", onclick: () => { S.edit.delete(id); render(true); } })));
+  }
   return el("li", { class: "item" + (it.done ? " done" : "") }, cb, body);
 }
-function editor(it) {
-  const id = it.id, L = LISTS.find(l => l.key === it.list) || LISTS[0];
-  const ta = el("textarea", { id: "u-" + id, placeholder: "What's the latest?" }); ta.value = it.update || "";
-  const save = () => { const cur = DB.items.get(id); if (cur) put("items", { ...cur, update: ta.value, updatedBy: "jodi" }); };
-  ta.addEventListener("input", () => saveLater("item:" + id, save, "s-" + id));
-  ta.addEventListener("blur", () => flush("item:" + id, save, "s-" + id));
-  const due = el("input", { type: "date", id: "d-" + id }); due.value = it.due || "";
-  due.addEventListener("change", () => patch(id, { due: due.value }, true));
-  const stat = el("select", { id: "st-" + id }, ...STATUS.map(([v, n]) => el("option", { value: v, text: n }))); stat.value = it.status || "";
-  stat.addEventListener("change", () => patch(id, { status: stat.value }, true));
-  const sec = el("select", { id: "sec-" + id }, ...L.sections.map(([v, n]) => el("option", { value: v, text: n }))); sec.value = it.section;
-  sec.addEventListener("change", () => patch(id, { section: sec.value }, true));
-  return el("div", { class: "editor" },
-    el("div", {}, el("label", { for: ta.id, text: "Latest update" }), ta, el("div", { class: "saved", id: "s-" + id })),
-    el("div", { class: "row2" }, el("div", {}, el("label", { for: due.id, text: "Due date" }), due), el("div", {}, el("label", { for: stat.id, text: "Status" }), stat)),
-    el("div", {}, el("label", { for: sec.id, text: "Move to" }), sec),
-    el("button", { type: "button", class: "btn ghost", text: "Done editing", onclick: () => { S.edit.delete(id); render(true); } }));
-}
 function addRow(list, section) {
-  const inp = el("input", { type: "text", id: "add-" + list + "-" + section, placeholder: "Add an item", "aria-label": "Add an item to this section", maxlength: 200, enterkeyhint: "done" });
-  const doAdd = () => {
-    const v = inp.value.trim(); if (!v) return; inp.value = "";
-    put("items", { id: newId(), list, section, title: v, detail: "", done: false, update: "", order: Date.now(), by: "jodi", createdAt: nowIso() });
-    render(true); const n = document.getElementById(inp.id); if (n) n.focus();
-  };
+  const inp = el("input", { type: "text", id: "add-" + list + "-" + section, placeholder: "Add a to-do", "aria-label": "Add a to-do", maxlength: 200, enterkeyhint: "done" });
+  const doAdd = () => { const v = inp.value.trim(); if (!v) return; inp.value = ""; put("items", { id: newId(), list, section, title: v, detail: "", done: false, update: "", order: Date.now(), by: "jodi", createdAt: nowIso() }); render(true); const n = document.getElementById(inp.id); if (n) n.focus(); };
   inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); doAdd(); } });
   return el("div", { class: "add" }, inp, el("button", { type: "button", class: "btn", text: "Add", onclick: doAdd }));
 }
 
-/* ---------- Month-end close ---------- */
-function closeRows(period, job) {
-  return [...DB.close.values()].filter(r => !r.void && STAGES[r.job] && r.name &&
-    (period === "open" ? r.stage < STAGES[r.job].length : r.period === period) && (job === "all" || r.job === job));
+/* ================= TIME CLOCK ================= */
+function weekStart(d) { const x = new Date(d || new Date()); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - x.getDay()); return x; }
+const CJOBS = [["tpam", "TPAM"], ["vicki", "Vicki's"], ["absolute", "Absolute"]];
+function targetFor(job) { if (job === "tpam") return 20; if (job === "vicki") return new Date() >= new Date(2027, 0, 1) ? 40 : 32; return null; }
+const liveTime = () => live("time").filter(e => e.start);
+const running = () => liveTime().find(e => !e.end);
+function weekHours() { const ws = weekStart(), out = {}; for (const e of liveTime()) { const s = new Date(e.start), en = e.end ? new Date(e.end) : new Date(); if (en <= ws) continue; out[e.job] = (out[e.job] || 0) + (en - Math.max(s, ws)) / 36e5; } return out; }
+function fmtH(h) { const m = Math.round(h * 60); return Math.floor(m / 60) + "h " + pad(m % 60) + "m"; }
+const jobName = k => (CJOBS.find(j => j[0] === k) || [, k])[1];
+function runningText() { const r = running(); return r ? "On the clock: " + jobName(r.job) + " since " + fmtTime(new Date(r.start)) + " (" + fmtH((Date.now() - new Date(r.start)) / 36e5) + ")" : "Not on the clock."; }
+function clockCard() {
+  const r = running(), c = card("Time clock", "Week of " + shortDate(weekStart()));
+  c.append(el("div", { class: "clockbtns" }, ...CJOBS.map(([k, n]) => { const on = !!(r && r.job === k); return el("button", { type: "button", class: "clockbtn" + (on ? " on" : ""), "aria-pressed": on ? "true" : "false", onclick: () => on ? stopClock() : startClock(k) }, n, el("span", { class: "cb-act", text: on ? "Tap to stop" : "Start" })); })),
+    el("div", { class: "running", id: "running", text: runningText() }));
+  const wk = weekHours(), bars = el("div", { class: "bars" });
+  for (const [k, n] of CJOBS) { const t = targetFor(k), h = wk[k] || 0; const row = el("div", { class: "bar" }, el("span", { text: n }), el("span", { class: "bar-v", id: "wk-" + k, text: fmtH(h) + (t ? " of " + t + "h" : "") })); if (t) { const f = el("div", { class: "fill" + (h > t ? " over" : ""), id: "wf-" + k }); f.style.width = Math.min(100, h / t * 100) + "%"; row.append(el("div", { class: "track" }, f)); } bars.append(row); }
+  c.append(bars);
+  const det = el("details", {}, el("summary", { text: "Add time by hand or fix an entry" })); if (S.timeOpen) det.open = true; det.addEventListener("toggle", () => { S.timeOpen = det.open; });
+  const job = el("select", { id: "m-job" }, ...CJOBS.map(([k, n]) => el("option", { value: k, text: n })));
+  const date = el("input", { type: "date", id: "m-date" }); date.value = todayStr();
+  const hrs = el("input", { type: "number", id: "m-hrs", min: "0.25", max: "16", step: "0.25", placeholder: "1.5", inputmode: "decimal" });
+  det.append(el("div", { class: "manual" }, field("Job", job), field("Date", date), field("Hours", hrs), el("button", { type: "button", class: "btn", text: "Add", onclick: () => addManual(job.value, date.value, Number(hrs.value)) })));
+  const ws = weekStart(), entries = liveTime().filter(e => new Date(e.end || Date.now()) > ws).sort((a, b) => a.start < b.start ? 1 : -1), ul = el("ul", { class: "entries" });
+  for (const e of entries) { const s = new Date(e.start), en = e.end ? new Date(e.end) : null, conf = S.confirm === "t:" + e.id;
+    ul.append(el("li", {}, el("span", { text: DAYS[s.getDay()].slice(0, 3) + " " + shortDate(s) + " · " + jobName(e.job) + " · " + (e.manual ? "added by hand" : fmtTime(s) + "–" + (en ? fmtTime(en) : "now")) + " · " + fmtH(((en || new Date()) - s) / 36e5) }),
+      el("button", { type: "button", class: "link", text: conf ? "Tap again to remove" : "Remove", onclick: () => { if (conf) { S.confirm = ""; put("time", { ...e, void: true }); } else S.confirm = "t:" + e.id; render(true); } }))); }
+  if (!entries.length) ul.append(el("li", { class: "empty", text: "No time logged this week yet." }));
+  det.append(el("div", { class: "subhead", text: "This week" }), ul); c.append(det);
+  return c;
 }
-function renderClose(main) {
-  const periods = [...new Set([...DB.close.values()].filter(r => !r.void && r.period).map(r => r.period))].sort().reverse();
-  const sel = el("select", { id: "c-period", "aria-label": "Which month" },
-    el("option", { value: "open", text: "Everything still open" }), ...periods.map(p => el("option", { value: p, text: periodLabel(p) })));
-  sel.value = S.period; sel.addEventListener("change", () => { S.period = sel.value; render(true); });
-  const filters = el("div", { class: "filters", role: "group", "aria-label": "Which job" });
-  for (const [k, n] of [["all", "All jobs"], ...CJOBS]) filters.append(el("button", { type: "button", "aria-pressed": S.cjob === k ? "true" : "false", text: n, onclick: () => { S.cjob = k; render(true); } }));
-  main.append(el("div", { class: "toolbar" }, el("div", { class: "field" }, el("label", { for: "c-period", text: "Month" }), sel), filters));
+function tick() { const r = $("#running"); if (r) r.textContent = runningText(); if (!running()) return; const wk = weekHours(); for (const [k] of CJOBS) { const v = document.getElementById("wk-" + k), t = targetFor(k), h = wk[k] || 0; if (v) v.textContent = fmtH(h) + (t ? " of " + t + "h" : ""); const f = document.getElementById("wf-" + k); if (f && t) { f.style.width = Math.min(100, h / t * 100) + "%"; f.classList.toggle("over", h > t); } } }
+function startClock(job) { const t = nowIso(), r = running(); if (r) put("time", { ...r, end: t }); put("time", { id: newId(), job, start: t, end: "", void: false, manual: false }); render(true); }
+function stopClock() { const r = running(); if (r) { put("time", { ...r, end: nowIso() }); render(true); } }
+function addManual(job, date, hrs) { if (!date || !(hrs > 0) || hrs > 16) { setStatus("Enter the hours as a number, like 1.5."); return; } setStatus(""); const s = parseYmd(date); s.setHours(9, 0, 0, 0); put("time", { id: newId(), job, start: s.toISOString(), end: new Date(s.getTime() + hrs * 36e5).toISOString(), void: false, manual: true }); render(true); }
 
-  const rows = closeRows(S.period, S.cjob).sort((a, b) =>
-    (CJOBS.findIndex(j => j[0] === a.job) - CJOBS.findIndex(j => j[0] === b.job)) ||
-    ((a.stage >= STAGES[a.job].length) - (b.stage >= STAGES[b.job].length)) || (a.stage - b.stage) || a.name.localeCompare(b.name));
-  const summ = CJOBS.map(([k, n]) => { const r = rows.filter(x => x.job === k); if (!r.length) return null; const d = r.filter(x => x.stage >= STAGES[k].length).length;
-    return S.period === "open" ? n + ": " + r.length + " open" : n + ": " + d + " of " + r.length + " done"; }).filter(Boolean);
-  main.append(el("div", { class: "summary", text: summ.join(" · ") || "Nothing here." }));
-  let lastJob = "";
-  for (const r of rows) {
-    if (r.job !== lastJob) { lastJob = r.job; main.append(el("section", {}, el("h2", {}, el("span", { text: jobName(r.job) })))); }
-    main.append(closeRow(r));
-  }
-  if (!rows.length) main.append(el("div", { class: "empty", text: S.period === "open" ? "Everything is closed out. Add a client below to start a month." : "No clients for this month and job." }));
-
-  const job = el("select", { id: "c-job" }, ...CJOBS.map(([k, n]) => el("option", { value: k, text: n })));
-  if (S.cjob !== "all") job.value = S.cjob;
-  const now = new Date(), prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const per = el("input", { type: "text", id: "c-per", inputmode: "numeric" }); per.value = S.period !== "open" ? S.period : prev.getFullYear() + "-" + pad(prev.getMonth() + 1);
-  const name = el("input", { type: "text", id: "c-name", placeholder: "Client or association", maxlength: 80, "aria-label": "Client or association" });
-  const add = () => {
-    const n = name.value.trim(), p = per.value.trim(); if (!n) return;
-    if (!/^\d{4}-\d{2}$/.test(p)) { setStatus("Month should look like 2026-11."); return; }
-    const id = p + "-" + job.value + "-" + slug(n);
-    if (DB.close.has(id) && !DB.close.get(id).void) { setStatus(n + " is already on " + periodLabel(p) + "."); return; }
-    setStatus(""); name.value = "";
-    put("close", { id, job: job.value, period: p, name: n, sub: "", stage: 0, note: "", void: false, createdAt: nowIso() }); render(true);
-  };
-  name.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); add(); } });
-  main.append(el("section", { class: "card" }, el("h2", {}, el("span", { text: "Add to the board" })),
-    el("div", { class: "row2" }, el("div", {}, el("label", { for: "c-job", text: "Job" }), job), el("div", {}, el("label", { for: "c-per", text: "Month (YYYY-MM)" }), per)),
-    el("div", { class: "add" }, name, el("button", { type: "button", class: "btn", text: "Add", onclick: add }))));
-
-  if (S.period !== "open" && rows.length) {
-    const [y, m] = S.period.split("-").map(Number), nx = new Date(y, m, 1), np = nx.getFullYear() + "-" + pad(nx.getMonth() + 1);
-    const conf = S.confirm === "roll:" + S.period;
-    main.append(el("div", { class: "card" },
-      el("div", { class: "hint", text: "Copy every name on this month into " + periodLabel(np) + ", starting from step one. Nothing here changes." }),
-      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: conf ? "Tap again to start " + periodLabel(np) : "Start " + periodLabel(np),
-        onclick: () => {
-          if (!conf) { S.confirm = "roll:" + S.period; render(true); return; }
-          S.confirm = "";
-          for (const r of rows) { const id = np + "-" + r.job + "-" + slug(r.name); if (!DB.close.has(id)) put("close", { id, job: r.job, period: np, name: r.name, sub: r.sub || "", stage: 0, note: "", void: false, createdAt: nowIso() }); }
-          S.period = np; render(true);
-        } }))));
-  }
-}
-function closeRow(r) {
-  const st = STAGES[r.job], n = st.length, complete = r.stage >= n;
-  const pills = el("div", { class: "stages", role: "group", "aria-label": "Steps for " + r.name });
-  st.forEach((s, i) => pills.append(el("button", { type: "button", class: i < r.stage ? "on" : i === r.stage ? "nextup" : "", "aria-pressed": i < r.stage ? "true" : "false",
-    text: s, onclick: () => { put("close", { ...DB.close.get(r.id), stage: r.stage === i + 1 ? i : i + 1 }); render(true); } })));
-  const prog = el("div", { class: "prog" }, el("i")); prog.firstChild.style.width = (Math.min(r.stage, n) / n * 100) + "%";
-  const note = el("input", { type: "text", id: "cn-" + r.id, placeholder: "Note (waiting on Jeff, missing statement…)", "aria-label": "Note for " + r.name, maxlength: 300 });
-  note.value = r.note || "";
-  const save = () => { const cur = DB.close.get(r.id); if (cur) put("close", { ...cur, note: note.value }); };
-  note.addEventListener("input", () => saveLater("close:" + r.id, save, "cs-" + r.id));
-  note.addEventListener("blur", () => flush("close:" + r.id, save, "cs-" + r.id));
-  return el("div", { class: "crow" + (complete ? " complete" : "") },
-    el("div", { class: "crow-h" }, el("span", { class: "crow-n", text: r.name }),
-      el("span", { class: "crow-s", text: [r.sub, S.period === "open" ? periodLabel(r.period) : ""].filter(Boolean).join(" · ") })),
-    el("div", { class: "next" }, complete ? el("b", { text: "Done" }) : el("span", {}, "Next: ", el("b", { text: st[r.stage] })), " · step " + Math.min(r.stage, n) + " of " + n),
-    prog, pills, note, el("div", { class: "saved", id: "cs-" + r.id }));
-}
-const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "row";
-
-/* ---------- Settings ---------- */
+/* ================= SETTINGS ================= */
 function renderSettings(main) {
   const url = el("input", { type: "text", id: "set-url", placeholder: "https://script.google.com/macros/s/…/exec", autocomplete: "off", spellcheck: "false" });
   const tok = el("input", { type: "text", id: "set-tok", placeholder: "Sync code", autocomplete: "off", spellcheck: "false" });
@@ -540,78 +790,50 @@ function renderSettings(main) {
     if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(u)) { msg.textContent = "That link should start with https://script.google.com/"; return; }
     if (t.length < 8) { msg.textContent = "Paste the whole sync code."; return; }
     msg.textContent = "Checking…";
-    try {
-      const got = await fetchJson(u + "?token=" + encodeURIComponent(t) + "&ping=1");
-      if (!got.ok) { msg.textContent = got.error === "bad_token" ? "The Sheet answered, but the sync code doesn't match." : "The Sheet answered with an error."; return; }
-    } catch (e) { msg.textContent = "Couldn't reach that link. Check you deployed it with access for \"Anyone\"."; return; }
-    config = { url: u, token: t }; LS.set("hub:config", config);
-    msg.textContent = "Connected. Syncing now…"; await sync(); go("today");
+    try { const got = await fetchJson(u + "?token=" + encodeURIComponent(t) + "&ping=1"); if (!got.ok) { msg.textContent = got.error === "bad_token" ? "The Sheet answered, but the sync code doesn't match." : "The Sheet answered with an error."; return; } }
+    catch (e) { msg.textContent = "Couldn't reach that link. Check you deployed it with access for \"Anyone\"."; return; }
+    config = { url: u, token: t }; LS.set("hub:config", config); msg.textContent = "Connected. Syncing now…"; await sync(); go("home");
   };
-  main.append(el("section", { class: "card" }, el("h2", {}, el("span", { text: "Connect your Google Sheet" })),
-    el("div", { class: "hint", text: "Paste the web app link and the sync code from your \"To-Do Hub Sync\" setup. You only do this once per device." }),
-    el("div", { class: "field", style: "margin-top:10px" }, el("label", { for: "set-url", text: "Web app link" }), url),
-    el("div", { class: "field", style: "margin-top:10px" }, el("label", { for: "set-tok", text: "Sync code" }), tok),
-    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Save and connect", onclick: save })), msg));
-
+  main.append(card("Connect your Google Sheet", "", el("div", { class: "hint", text: "Paste the web app link and the sync code. You only do this once per device." }),
+    field("Web app link", url), field("Sync code", tok), el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Save and connect", onclick: save })), msg));
   if (config) {
-    const link = location.origin + location.pathname + "#setup=" + btoa(JSON.stringify(config));
-    const cmsg = el("div", { class: "saved" });
-    main.append(el("section", { class: "card" }, el("h2", {}, el("span", { text: "Set up your other device" })),
-      el("div", { class: "hint", text: "Copy this link, text or email it to yourself, and open it on your phone or computer. It connects that device to the same Sheet. Keep it private: anyone with it can see your lists." }),
-      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: "Copy setup link", onclick: async () => {
-        try { await navigator.clipboard.writeText(link); cmsg.textContent = "Copied."; } catch (_) { cmsg.textContent = link; }
-      } })), cmsg));
+    const link = location.origin + location.pathname + "#setup=" + btoa(JSON.stringify(config)), cmsg = el("div", { class: "saved" });
+    main.append(card("Set up your other device", "", el("div", { class: "hint", text: "Copy this link, text or email it to yourself, and open it on your phone or computer. Keep it private: anyone with it can see your lists." }),
+      el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: "Copy setup link", onclick: async () => { try { await navigator.clipboard.writeText(link); cmsg.textContent = "Copied."; } catch (_) { cmsg.textContent = link; } } })), cmsg));
   }
-
-  const n = Object.keys(queue).length;
-  main.append(el("section", { class: "card" }, el("h2", {}, el("span", { text: "Sync and backup" })),
-    el("div", { class: "hint", text: syncText().text }),
-    el("div", { class: "btnrow" },
-      el("button", { type: "button", class: "btn", text: "Sync now", disabled: !config, onclick: () => sync() }),
-      el("button", { type: "button", class: "btn ghost", text: "Download a backup", onclick: backup })),
-    el("div", { class: "hint", style: "margin-top:10px", text: "The backup is a file with every list, close row and time entry, in case you ever want a copy outside the Sheet." })));
-
-  main.append(el("section", { class: "card" }, el("h2", {}, el("span", { text: "Install on this device" })),
-    el("ul", { class: "steps" },
-      el("li", { text: "iPhone: open this page in Safari, tap Share, then Add to Home Screen." }),
-      el("li", { text: "Android: open it in Chrome, tap ⋮, then Install app or Add to Home screen." }),
-      el("li", { text: "Dell (Chrome or Edge): click the install icon at the right end of the address bar." })),
-    el("div", { class: "hint", style: "margin-top:8px", text: "Version " + APP_VERSION } )));
+  main.append(card("Sync and backup", "", el("div", { class: "hint", text: syncText().text }),
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Sync now", disabled: !config, onclick: () => sync() }), el("button", { type: "button", class: "btn ghost", text: "Download a backup", onclick: backup }))));
+  main.append(card("Install on this device", "", el("ul", { class: "steps" },
+    el("li", { text: "iPhone: open this page in Safari, tap Share, then Add to Home Screen." }),
+    el("li", { text: "Android: open it in Chrome, tap ⋮, then Install app." }),
+    el("li", { text: "Dell (Chrome or Edge): click the install icon at the right end of the address bar." })), el("div", { class: "hint small", text: "Version " + APP_VERSION })));
 }
 function backup() {
   const data = { exportedAt: nowIso(), version: APP_VERSION }; for (const k of KINDS) data[k] = [...DB[k].values()];
-  const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })), download: "todo-hub-backup-" + ymd(new Date()) + ".json" });
+  const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })), download: "todo-hub-backup-" + todayStr() + ".json" });
   document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
-/* ================= saving text as you type ================= */
+/* ================= typing saves ================= */
 function mark(id, t) { const n = document.getElementById(id); if (n) n.textContent = t; }
-function saveLater(key, fn, statusId) { clearTimeout(timers.get(key)); mark(statusId, "Saving…"); timers.set(key, setTimeout(() => { timers.delete(key); fn(); mark(statusId, "Saved"); }, 700)); }
-function flush(key, fn, statusId) { if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); fn(); mark(statusId, "Saved"); } if (S.dirty) setTimeout(() => render(), 0); }
+function saveLater(key, fn, statusId) { clearTimeout(timers.get(key)); if (statusId) mark(statusId, "Saving…"); timers.set(key, setTimeout(() => { timers.delete(key); fn(); if (statusId) mark(statusId, "Saved"); }, 700)); }
+function flush(key, fn, statusId) { if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); fn(); if (statusId) mark(statusId, "Saved"); } if (S.dirty) setTimeout(() => render(), 0); }
 
 /* ================= start ================= */
 (function start() {
   loadLocal();
-  const takeSetup = h => {
-    try { const c = JSON.parse(atob(h.slice(6))); if (c.url && c.token) { config = { url: c.url, token: c.token }; LS.set("hub:config", config); setStatus(""); } }
-    catch (_) { setStatus("That setup link didn't work. Copy it again from your other device."); }
-    history.replaceState(null, "", location.pathname + "#today"); S.tab = "today";
-  };
+  const valid = k => TABS.some(t => t[0] === k) || k === "settings";
+  const takeSetup = h => { try { const c = JSON.parse(atob(h.slice(6))); if (c.url && c.token) { config = { url: c.url, token: c.token }; LS.set("hub:config", config); setStatus(""); } } catch (_) { setStatus("That setup link didn't work. Copy it again from your other device."); } history.replaceState(null, "", location.pathname + "#home"); S.tab = "home"; };
   const h = (location.hash || "").slice(1);
-  if (h.startsWith("setup=")) takeSetup(h);
-  else if (TABS.some(t => t[0] === h) || h === "settings") S.tab = h;
-  addEventListener("hashchange", () => {
-    const k = location.hash.slice(1);
-    if (k.startsWith("setup=")) { takeSetup(k); render(true); sync(); return; }
-    if ((TABS.some(t => t[0] === k) || k === "settings") && k !== S.tab) { S.tab = k; render(true); }
-  });
+  if (h.startsWith("setup=")) takeSetup(h); else if (valid(h)) S.tab = h;
+  addEventListener("hashchange", () => { const k = location.hash.slice(1); if (k.startsWith("setup=")) { takeSetup(k); render(true); sync(); return; } if (valid(k) && k !== S.tab) { S.tab = k; render(true); } });
   $("#gear").addEventListener("click", () => go("settings"));
-  render(true); renderSync();
-  sync();
-  setInterval(tick, 20000);
+  $("#fab").addEventListener("click", () => { openQuickAdd(S.tab === "home" ? "task" : (S.tab === "personal" ? "task" : "client")); window.scrollTo(0, 0); });
+  render(true); renderSync(); sync();
+  let day = todayStr();
+  setInterval(() => { tick(); if (todayStr() !== day) { day = todayStr(); render(); } }, 20000);
   setInterval(() => { if (document.visibilityState === "visible") sync(); }, 60000);
-  addEventListener("online", () => sync());
-  addEventListener("offline", renderSync);
+  addEventListener("online", () => sync()); addEventListener("offline", renderSync);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { render(); sync(); } });
   addEventListener("storage", e => { if (e.key === "hub:data") { loadLocal(); render(); } });
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

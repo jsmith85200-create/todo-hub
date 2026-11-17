@@ -9,12 +9,23 @@
 // Your private sync code. The app must use the same code. Don't share it.
 const TOKEN = "PASTE-YOUR-SYNC-CODE-HERE";
 
+// Your Absolute CRM sheet and Vicki's office Work Locator (read-only).
+const CRM_ID = "1iUBV7LmJoXYNEwcg1AZvklSjNAomTnfPPfVHcSBzYGY";
+const WORK_LOCATOR_ID = "1rL2Guj2Q9Ru5YLi-auqM0lTVKzvpzy0l8dLpmN20TTA";
+
 const KINDS = {
   items:    ["id", "list", "section", "title", "detail", "done", "doneAt", "star", "due", "status", "update", "order", "by", "createdAt", "updatedAt", "updatedBy", "void"],
-  close:    ["id", "job", "period", "name", "sub", "stage", "note", "void", "createdAt", "updatedAt"],
   time:     ["id", "job", "start", "end", "void", "manual", "updatedAt"],
   rotation: ["id", "done", "updatedAt"],
-  notes:    ["id", "text", "updatedAt"]
+  notes:    ["id", "text", "updatedAt"],
+  settings: ["id", "value", "updatedAt"],
+  assoc:    ["id", "code", "name", "bank", "cam", "order", "void", "updatedAt"],
+  tpam:     ["id", "period", "code", "step", "d1", "d2", "d3", "d4", "d5", "blocker", "note", "updatedAt"],
+  vclients: ["id", "name", "software", "how", "note", "void", "updatedAt"],
+  vwork:    ["id", "client", "svc", "freq", "start", "cthru", "rthru", "step", "priority", "blocker", "note", "void", "updatedAt"],
+  aclients: ["id", "name", "type", "services", "fee", "start", "dueDay", "lastClassified", "blocker", "note", "order", "void", "updatedAt"],
+  awork:    ["id", "client", "period", "step", "d1", "d2", "d3", "d4", "invoiced", "blocker", "note", "updatedAt"],
+  social:   ["id", "title", "platform", "date", "status", "note", "void", "updatedAt"]
 };
 
 function out_(obj) {
@@ -64,7 +75,10 @@ function doGet(e) {
   if (p.ping) return out_({ ok: true, ping: true });
   const data = {};
   Object.keys(KINDS).forEach(function (k) { data[k] = readAll_(k); });
-  return out_({ ok: true, now: new Date().toISOString(), data: data });
+  const res = { ok: true, now: new Date().toISOString(), data: data, crm: [], wl: [] };
+  try { res.crm = readCrm_(); } catch (err) { res.crmError = String(err.message || err); }
+  try { res.wl = readWorkLocator_(); } catch (err) { res.wlError = String(err.message || err); }
+  return out_(res);
 }
 
 function doPost(e) {
@@ -75,11 +89,13 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const byKind = {};
+    const byKind = {}, crm = [];
     (body.changes || []).forEach(function (c) {
-      if (c && KINDS[c.kind] && c.rec && c.rec.id) (byKind[c.kind] = byKind[c.kind] || []).push(c.rec);
+      if (c && c.kind === "crm" && c.rec) crm.push(c.rec);
+      else if (c && KINDS[c.kind] && c.rec && c.rec.id) (byKind[c.kind] = byKind[c.kind] || []).push(c.rec);
     });
     let applied = 0;
+    if (crm.length) applied += writeCrm_(crm);
     Object.keys(byKind).forEach(function (kind) {
       const sh = sheetFor_(kind), h = headers_(sh, kind);
       const idCol = h.indexOf("id"), upCol = h.indexOf("updatedAt");
@@ -114,6 +130,44 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ---------- CRM (Master CRM tab: headers on row 8, data from row 9, columns B-L) ---------- */
+function crmSheet_() { return SpreadsheetApp.openById(CRM_ID).getSheetByName("Master CRM"); }
+function readCrm_() {
+  const sh = crmSheet_(), n = sh.getLastRow() - 8;
+  if (n < 1) return [];
+  return sh.getRange(9, 2, n, 11).getDisplayValues().map(function (r, i) {
+    return { row: i + 9, contact: r[0], company: r[1], category: r[2], phone: r[3], email: r[4], service: r[5], last: r[6], next: r[7], status: r[8], notes: r[9], how: r[10] };
+  }).filter(function (r) { return r.contact || r.company; });
+}
+function writeCrm_(list) {
+  const sh = crmSheet_(), n = sh.getLastRow() - 8;
+  if (n < 1) return 0;
+  const vals = sh.getRange(9, 2, n, 2).getDisplayValues();
+  let done = 0;
+  list.forEach(function (c) {
+    let i = Number(c.row) - 9;
+    if (!(i >= 0 && i < n && vals[i][0] === c.contact && vals[i][1] === c.company)) {
+      i = -1;
+      for (let j = 0; j < n; j++) if (vals[j][0] === c.contact && vals[j][1] === c.company) { i = j; break; }
+    }
+    if (i < 0) return;
+    sh.getRange(i + 9, 8, 1, 3).setValues([[c.last || "", c.next || "", c.status || ""]]);
+    done++;
+  });
+  return done;
+}
+
+/* ---------- Vicki's Work Locator: open Bookkeeping 2026 rows for Jodi (and Tori's old ones) ---------- */
+function readWorkLocator_() {
+  const sh = SpreadsheetApp.openById(WORK_LOCATOR_ID).getSheetByName("Bookkeeping 2026"), n = sh.getLastRow() - 1;
+  if (n < 1) return [];
+  return sh.getRange(2, 1, n, 10).getDisplayValues().filter(function (r) {
+    return r[0] && /^(Jodi|Tori)$/i.test(String(r[2]).trim()) && !/^6/.test(String(r[1]).trim());
+  }).map(function (r) {
+    return { client: r[0], status: r[1], bookkeeper: r[2], work: r[3], provided: r[4], notes: r[5], contacted: r[6], completed: r[7], invoiced: r[8], days: r[9] };
+  });
 }
 
 // Optional: run this once from the editor to make sure the tabs exist.
