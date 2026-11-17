@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.1";
+const APP_VERSION = "2.1.2";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -413,7 +413,7 @@ function vCell(w, m) {
 }
 function vickiStats(m, svc) {
   let total = 0, done = 0, blockers = 0;
-  for (const w of live("vwork")) { if (svc && w.svc !== svc) continue; if (!DB.vclients.get(w.client) || DB.vclients.get(w.client).void) continue; if (w.blocker && !vComplete(w)) blockers++; if (!vDue(w, m)) continue; total++; if (w.cthru && w.cthru >= m) done++; }
+  for (const w of live("vwork")) { if (svc && w.svc !== svc) continue; if (!DB.vclients.get(w.client) || DB.vclients.get(w.client).void) continue; if (w.blocker && !(w.cthru && w.cthru >= m)) blockers++; if (!vDue(w, m)) continue; total++; if (w.cthru && w.cthru >= m) done++; }
   return { total, done, blockers, pct: pct(done, total) };
 }
 function renderVicki(main) {
@@ -455,7 +455,7 @@ function vRow(w, m) {
       working ? stepChip(stp[1], stp[2]) : vComplete(w) ? stepChip("Printed & complete", "s5") : stepChip("Waiting to receive", "nr")),
     strip,
     el("div", { class: "vr-s", text: status + (working ? " · received through " + mShort(w.rthru) : "") + (w.freq === "q" ? " · quarterly" : w.freq === "a" ? " · annual" : "") }),
-    blockerLine(!vComplete(w) && w.blocker));
+    blockerLine(!(w.cthru && w.cthru >= m) && w.blocker));
   const wrap = el("div", { class: "vwrap" }, row);
   if (open) wrap.append(vDetail(w, c));
   return wrap;
