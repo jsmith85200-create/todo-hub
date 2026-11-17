@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.5";
+const APP_VERSION = "2.1.6";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -433,16 +433,26 @@ function renderVicki(main) {
   const later = ws.filter(notDue); ws = ws.filter(w => !notDue(w));
   const blk = w => !!(w.blocker && !(w.cthru && w.cthru >= m));
   const order = (a, b) => (blk(b) - blk(a)) || (a.priority || 2) - (b.priority || 2) || vName(a).localeCompare(vName(b));
-  const groups = svc === "books"
-    ? V_SOFT.map(([soft, sname]) => [sname, ws.filter(w => (DB.vclients.get(w.client).software || "") === soft)])
-    : [["Blocked", ws.filter(blk)], ["Everyone else", ws.filter(w => !blk(w))]];
-  for (const [sname, g] of groups) {
+  let groups, doneList = [];
+  if (svc === "books") {
+    const isDone = w => !!(w.cthru && w.cthru >= m), rest = ws.filter(w => !isDone(w));
+    doneList = ws.filter(isDone);
+    const hasWork = w => !!(w.rthru && (!w.cthru || w.cthru < w.rthru));
+    const review = w => w.vstep === "review";
+    const canWork = w => !blk(w) && !review(w) && hasWork(w) && w.vstep !== "docs";
+    groups = [["Ready to work", rest.filter(canWork), "received and not blocked"], ["Ready for review", rest.filter(review), "waiting on Vicki"],
+      ["Not received", rest.filter(w => !blk(w) && !review(w) && !canWork(w)), "or waiting on docs"], ["Blocked", rest.filter(w => blk(w) && !review(w)), ""]];
+  } else groups = [["Blocked", ws.filter(blk), ""], ["Everyone else", ws.filter(w => !blk(w)), ""]];
+  for (const [sname, g, sub] of groups) {
     const group = g.sort(order);
     if (!group.length) continue;
-    const sec = el("section", {}, el("h2", {}, el("span", { text: sname }), el("small", { text: group.filter(w => w.cthru && w.cthru >= m || !vDue(w, m)).length + " of " + group.length + " done for " + mShort(m) })));
+    const sec = el("section", {}, el("h2", {}, el("span", { text: sname + (svc === "books" ? " (" + group.length + ")" : "") }), el("small", { text: svc === "books" ? sub : group.filter(w => w.cthru && w.cthru >= m || !vDue(w, m)).length + " of " + group.length + " done for " + mShort(m) })));
     for (const w of group) sec.append(vRow(w, m));
     main.append(sec);
   }
+  if (doneList.length) { const det = el("details", { class: "card" }, el("summary", { text: "Done for " + mShort(m) + " (" + doneList.length + ")" })); const box = el("div", {});
+    for (const w of doneList.sort((a, b) => vName(a).localeCompare(vName(b)))) box.append(vRow(w, m));
+    det.append(box); main.append(det); }
   if (later.length) { const det = el("details", { class: "card" }, el("summary", { text: "Quarterly / annual, not due for " + mShort(m) + " (" + later.length + ")" })); const box = el("div", {});
     for (const w of later.sort((a, b) => vName(a).localeCompare(vName(b)))) box.append(vRow(w, m));
     det.append(box); main.append(det); }
@@ -462,7 +472,7 @@ function vRow(w, m) {
   const strip = el("div", { class: "strip", "aria-hidden": "true" }, ...months.map(x => { const [cls, t] = vCell(w, x); return el("i", { class: "cell " + cls + (x === m ? " cur" : ""), title: mLabel(x) + ": " + t }, el("small", { text: MONTHS[Number(x.slice(5)) - 1][0] })); }));
   const status = w.cthru ? "Complete through " + mShort(w.cthru) : "Nothing complete yet";
   const row = el("button", { type: "button", class: "vrow" + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("v:" + w.id) : S.open.add("v:" + w.id); render(true); } },
-    el("div", { class: "vr-h" }, el("span", { class: "vr-n", text: c.name }), w.priority === 1 ? el("span", { class: "chip over", text: "High" }) : w.priority === 3 ? el("span", { class: "chip", text: "Low" }) : null,
+    el("div", { class: "vr-h" }, el("span", { class: "vr-n", text: c.name }), w.svc === "books" && c.software ? el("span", { class: "chip", text: c.software === "qbo" ? "QBO" : "Desktop" }) : null, w.priority === 1 ? el("span", { class: "chip over", text: "High" }) : w.priority === 3 ? el("span", { class: "chip", text: "Low" }) : null,
       (w.cthru && w.cthru >= m) || (!vDue(w, m) && vComplete(w)) ? stepChip("Printed & complete", "s5") : working || w.vstep ? stepChip(stp[1], stp[2]) : stepChip("Waiting to receive", "nr")),
     strip,
     el("div", { class: "vr-s", text: status + (working ? " · received through " + mShort(w.rthru) : "") + (w.freq === "q" ? " · quarterly" : w.freq === "a" ? " · annual" : "") }),
