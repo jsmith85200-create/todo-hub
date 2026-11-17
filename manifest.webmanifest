@@ -1,0 +1,14 @@
+{
+  "name": "Jodi's To-Do Hub",
+  "short_name": "To-Do Hub",
+  "description": "Today's to-dos, TPAM recs, month-end close and time clock for TPAM, Vicki's office and Absolute Bookkeeping.",
+  "start_url": "./#today",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f3",
+  "theme_color": "#1f5f8b",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
