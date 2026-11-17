@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.4";
+const APP_VERSION = "2.1.5";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -414,14 +414,14 @@ function vCell(w, m) {
 function vickiStats(m, svc) {
   let total = 0, done = 0, blockers = 0;
   for (const w of live("vwork")) { if (svc && w.svc !== svc) continue; if (!DB.vclients.get(w.client) || DB.vclients.get(w.client).void) continue; if (w.blocker && !(w.cthru && w.cthru >= m)) blockers++; if (!vDue(w, m)) continue; total++; if (w.cthru && w.cthru >= m) done++; }
-  return { total, done, blockers, pct: pct(done, total) };
+  return { total, done, blockers, pct: total ? pct(done, total) : 100 };
 }
 function renderVicki(main) {
   const m = monthOf("vicki");
   main.append(monthPicker("vicki", "work month"));
   const ov = vickiStats(m);
   main.append(el("section", { class: "card" }, bigPct(ov.pct, ov.done + " of " + ov.total + " done for " + mLabel(m) + (ov.blockers ? " · " + ov.blockers + " blocked" : ""),
-    el("div", { class: "svcbars" }, ...V_SVCS.map(([k, n]) => { const s = vickiStats(m, k); return el("div", { class: "svcbar" }, el("span", { text: n }), el("span", { class: "bar-v", text: s.total ? s.pct + "%" : "–" }), el("div", { class: "track" }, el("div", { class: "fill", style: "width:" + s.pct + "%" }))); })))));
+    el("div", { class: "svcbars" }, ...V_SVCS.map(([k, n]) => { const s = vickiStats(m, k); return el("div", { class: "svcbar" }, el("span", { text: n }), el("span", { class: "bar-v", text: s.pct + "%" }), el("div", { class: "track" }, el("div", { class: "fill", style: "width:" + s.pct + "%" }))); })))));
   const seg = el("div", { class: "seg", role: "tablist" });
   for (const [k, n] of V_SVCS) seg.append(el("button", { type: "button", role: "tab", "aria-selected": S.vsvc === k ? "true" : "false", onclick: () => { S.vsvc = k; render(true); } }, n, el("small", { text: vickiStats(m, k).pct + "%" })));
   main.append(seg);
