@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.1.3";
+const APP_VERSION = "2.1.4";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -425,9 +425,12 @@ function renderVicki(main) {
   const seg = el("div", { class: "seg", role: "tablist" });
   for (const [k, n] of V_SVCS) seg.append(el("button", { type: "button", role: "tab", "aria-selected": S.vsvc === k ? "true" : "false", onclick: () => { S.vsvc = k; render(true); } }, n, el("small", { text: vickiStats(m, k).pct + "%" })));
   main.append(seg);
-  const svc = S.vsvc, ws = live("vwork").filter(w => w.svc === svc && DB.vclients.get(w.client) && !DB.vclients.get(w.client).void);
+  const svc = S.vsvc; let ws = live("vwork").filter(w => w.svc === svc && DB.vclients.get(w.client) && !DB.vclients.get(w.client).void);
   const legend = el("div", { class: "legend" }, ...[["s5", "Complete"], ["s1", "Received · working"], ["s2", "Waiting on docs"], ["s4", "Waiting on review"], ["nr", "Not received"], ["na", "Not due"]].map(([c, t]) => el("span", {}, el("i", { class: "cell " + c }), t)));
   main.append(legend);
+  const lastDueBy = w => { let x = m; for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, -1); return vDue(w, x) ? x : ""; };
+  const notDue = w => w.freq && w.freq !== "m" && !vDue(w, m) && (!lastDueBy(w) || (w.cthru && w.cthru >= lastDueBy(w)));
+  const later = ws.filter(notDue); ws = ws.filter(w => !notDue(w));
   const blk = w => !!(w.blocker && !(w.cthru && w.cthru >= m));
   const order = (a, b) => (blk(b) - blk(a)) || (a.priority || 2) - (b.priority || 2) || vName(a).localeCompare(vName(b));
   const groups = svc === "books"
@@ -440,7 +443,10 @@ function renderVicki(main) {
     for (const w of group) sec.append(vRow(w, m));
     main.append(sec);
   }
-  if (!ws.length) main.append(el("div", { class: "empty", text: "No " + svcName(svc).toLowerCase() + " clients yet. Add one below." }));
+  if (later.length) { const det = el("details", { class: "card" }, el("summary", { text: "Quarterly / annual, not due for " + mShort(m) + " (" + later.length + ")" })); const box = el("div", {});
+    for (const w of later.sort((a, b) => vName(a).localeCompare(vName(b)))) box.append(vRow(w, m));
+    det.append(box); main.append(det); }
+  if (!ws.length && !later.length) main.append(el("div", { class: "empty", text: "No " + svcName(svc).toLowerCase() + " clients yet. Add one below." }));
   const gone = [...DB.vwork.values()].filter(w => w.svc === svc && w.void && DB.vclients.get(w.client) && !DB.vclients.get(w.client).void).sort((a, b) => vName(a).localeCompare(vName(b)));
   if (gone.length) { const det = el("details", { class: "card" }, el("summary", { text: "Removed from " + svcName(svc).toLowerCase() + " (" + gone.length + ")" })); const ul = el("ul", { class: "entries" });
     for (const w of gone) ul.append(el("li", {}, el("span", {}, el("b", { text: vName(w) }), w.blocker ? el("div", { class: "vr-s", text: w.blocker }) : null), el("button", { type: "button", class: "link", text: "Put back", onclick: () => { put("vwork", { ...w, void: false }); render(true); } })));
