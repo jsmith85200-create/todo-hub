@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.2.2";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -419,6 +419,23 @@ function vickiStats(m, svc) {
 function renderVicki(main) {
   const m = monthOf("vicki");
   main.append(monthPicker("vicki", "work month"));
+  const q = el("input", { type: "search", id: "vsearch", placeholder: "Search clients (all services)", autocomplete: "off", "aria-label": "Search Vicki's clients" }); q.value = S.vq || "";
+  q.addEventListener("input", () => { S.vq = q.value; render(true); const n = document.getElementById("vsearch"); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } });
+  main.append(el("div", { class: "searchbar" }, q, S.vq ? el("button", { type: "button", class: "link", text: "Clear", onclick: () => { S.vq = ""; render(true); } }) : null));
+  if ((S.vq || "").trim()) {
+    const t = S.vq.trim().toLowerCase(), hit = w => { const c = DB.vclients.get(w.client); return c && !c.void && (c.name.toLowerCase().includes(t) || String(w.note || "").toLowerCase().includes(t) || String(w.blocker || "").toLowerCase().includes(t)); };
+    const all = [...DB.vwork.values()].filter(hit); let any = false;
+    for (const [k, n] of V_SVCS) {
+      const g = all.filter(w => w.svc === k && !w.void).sort((a, b) => vName(a).localeCompare(vName(b))), gone = all.filter(w => w.svc === k && w.void);
+      if (!g.length && !gone.length) continue; any = true;
+      const sec = el("section", {}, el("h2", {}, el("span", { text: n }), el("small", { text: g.length + " found" })));
+      for (const w of g) sec.append(vRow(w, m));
+      for (const w of gone) sec.append(el("div", { class: "vr-s" }, vName(w) + " (removed from " + n.toLowerCase() + ") ", el("button", { type: "button", class: "link", text: "Put back", onclick: () => { put("vwork", { ...w, void: false }); render(true); } })));
+      main.append(sec);
+    }
+    if (!any) main.append(el("div", { class: "empty", text: "No Vicki's client matches \"" + S.vq.trim() + "\"." }));
+    return;
+  }
   const ov = vickiStats(m);
   main.append(el("section", { class: "card" }, bigPct(ov.pct, ov.done + " of " + ov.total + " done for " + mLabel(m) + (ov.blockers ? " · " + ov.blockers + " blocked" : ""),
     el("div", { class: "svcbars" }, ...V_SVCS.map(([k, n]) => { const s = vickiStats(m, k); return el("div", { class: "svcbar" }, el("span", { text: n }), el("span", { class: "bar-v", text: s.pct + "%" }), el("div", { class: "track" }, el("div", { class: "fill", style: "width:" + s.pct + "%" }))); })))));
