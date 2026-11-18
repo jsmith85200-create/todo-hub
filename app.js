@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.1";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -252,6 +252,7 @@ function alerts() {
     if (r.step === 3 || (di && di.diff <= 2)) out.push({ job: "tpam", cls: dl.cls || "today", text: a.code + ": " + dl.label, go: "tpam" });
   }
   for (const c of live("aclients")) {
+    if (c.inactive || c.type !== "books") continue; // weekly clients (Rocky) only get meeting reminders; assistant clients have their own
     const months = absOpenMonths(c), cur = months[months.length - 1];
     if (cur) { const di = dueInfo(absDue(c, cur)); if (di && di.diff <= 3) out.push({ job: "absolute", cls: di.cls || "today", text: c.name + " " + mLabel(cur) + ": " + di.label.toLowerCase(), go: "absolute" }); }
   }
