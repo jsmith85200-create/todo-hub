@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.3.1";
+const APP_VERSION = "2.3.2";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -785,24 +785,24 @@ function crmTodayCard() {
   return c;
 }
 const CRM_CATS = [["Met in Person", "Warm / Reconnect"], ["Cold Emailed / Outreach", "Cold Outreach"], ["Currently Working With", "Active / Current"], ["Past Client - Inactive", "Stalled / Inactive"]];
-function crmAddForm() {
+function crmAddForm(where) {
+  const px = where === "qa" ? "qca-" : "ca-";
   const det = el("details", { class: "mini" }, el("summary", { text: "+ Add a contact" }));
-  if (S.crmAdding) det.open = true;
-  det.addEventListener("toggle", () => { S.crmAdding = det.open; });
+  if (!where) { if (S.crmAdding) det.open = true; det.addEventListener("toggle", () => { S.crmAdding = det.open; }); }
   if ((SERVER.ver || 0) < 4) {
     det.append(el("div", { class: "hint", text: "One quick step first: update your sync script so the app can add rows to your CRM. Open Sync settings for the steps." }));
     return det;
   }
-  const f = {}, inp = (k, label, type, ph) => { f[k] = el("input", { type: type || "text", id: "ca-" + k, placeholder: ph || "" }); return field(label, f[k]); };
-  const cat = el("select", { id: "ca-cat" }, ...CRM_CATS.map(([c]) => el("option", { value: c, text: c })));
-  const nx = el("input", { type: "date", id: "ca-next" }); { const x = addDays(new Date(), 2); while (x.getDay() === 0 || x.getDay() === 6) x.setDate(x.getDate() + 1); nx.value = ymd(x); }
-  const met = el("input", { type: "date", id: "ca-last" }); met.value = todayStr();
-  const notes = el("textarea", { id: "ca-notes", rows: "3", placeholder: "What you talked about" });
+  const f = {}, inp = (k, label, type, ph) => { f[k] = el("input", { type: type || "text", id: px + k, placeholder: ph || "" }); return field(label, f[k]); };
+  const cat = el("select", { id: px + "cat" }, ...CRM_CATS.map(([c]) => el("option", { value: c, text: c })));
+  const nx = el("input", { type: "date", id: px + "next" }); { const x = addDays(new Date(), 2); while (x.getDay() === 0 || x.getDay() === 6) x.setDate(x.getDate() + 1); nx.value = ymd(x); }
+  const met = el("input", { type: "date", id: px + "last" }); met.value = todayStr();
+  const notes = el("textarea", { id: px + "notes", rows: "3", placeholder: "What you talked about" });
   const add = () => {
     const rec = { id: "crmadd:" + newId(), contact: f.contact.value.trim(), company: f.company.value.trim(), category: cat.value, phone: f.phone.value.trim(), email: f.email.value.trim(), service: f.service.value.trim(), last: met.value, next: nx.value, status: (CRM_CATS.find(x => x[0] === cat.value) || [, ""])[1], notes: notes.value.trim(), how: f.how.value.trim() };
     if (!rec.contact && !rec.company) { setStatus("Add at least a name or a company."); return; }
     queue["crmadd:" + rec.id] = { kind: "crmadd", rec }; SERVER.crm.push({ ...rec, row: 0 }); saveLocal(); scheduleSync(800);
-    S.crmAdding = false; setStatus((rec.contact || rec.company) + " added to your CRM."); render(true);
+    S.crmAdding = false; if (S.qa && S.qa.kind === "contact") S.qa = null; setStatus((rec.contact || rec.company) + " added to your CRM."); render(true);
   };
   det.append(inp("contact", "Name"), inp("company", "Company"), field("Category", cat), inp("phone", "Phone", "tel"), inp("email", "Email", "email"),
     inp("service", "What they might need", "text", "e.g. Monthly bookkeeping"), inp("how", "How you met", "text", "e.g. JaxREIA meetup, Nov 16"),
@@ -872,10 +872,11 @@ function quickAddPanel() {
   const q = S.qa, close = () => { S.qa = null; render(true); };
   const jobSel = el("select", { id: "qa-job" }, ...QA_JOBS.filter(j => q.kind === "task" || j[0] !== "personal").map(([k, n]) => el("option", { value: k, text: n }))); jobSel.value = q.job === "personal" && q.kind === "client" ? "absolute" : q.job;
   jobSel.addEventListener("change", () => { S.qa.job = jobSel.value; render(true); });
-  const kinds = el("div", { class: "seg small" }, ...[["task", "New task"], ["client", "New client"]].map(([k, n]) => el("button", { type: "button", "aria-selected": q.kind === k ? "true" : "false", onclick: () => { S.qa.kind = k; render(true); } }, n)));
-  const box = el("div", { class: "qa", role: "dialog", "aria-label": "Add" }, el("div", { class: "qa-h" }, kinds, el("button", { type: "button", class: "link", text: "Close", onclick: close })), field(q.kind === "task" ? "For" : "Job", jobSel));
+  const kinds = el("div", { class: "seg small" }, ...[["task", "New task"], ["client", "New client"], ["contact", "CRM contact"]].map(([k, n]) => el("button", { type: "button", "aria-selected": q.kind === k ? "true" : "false", onclick: () => { S.qa.kind = k; render(true); } }, n)));
+  const box = el("div", { class: "qa", role: "dialog", "aria-label": "Add" }, el("div", { class: "qa-h" }, kinds, el("button", { type: "button", class: "link", text: "Close", onclick: close })), q.kind === "contact" ? null : field(q.kind === "task" ? "For" : "Job", jobSel));
   const job = jobSel.value;
-  if (q.kind === "task") {
+  if (q.kind === "contact") { const f = crmAddForm("qa"); f.open = true; box.append(f); }
+  else if (q.kind === "task") {
     const title = el("input", { type: "text", id: "qa-first", placeholder: "What needs doing?", maxlength: 200 });
     const secs = job === "tpam" ? [["follow", "Follow-ups"], ["other", "Other TPAM"]] : job === "vicki" ? [["office", "Office to-dos"]] : job === "absolute" ? [["absolute", "Absolute to-dos"]] : LISTS[2].sections.filter(x => x[0] !== "absolute");
     const sec = el("select", { id: "qa-sec" }, ...secs.map(([k, n]) => el("option", { value: k, text: n })));
