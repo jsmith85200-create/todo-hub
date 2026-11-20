@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.4.1";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -738,7 +738,7 @@ function crmDetail(r) {
   const send = el("div", { class: "btnrow" },
     el("button", { type: "button", class: "btn", text: "Copy message", onclick: () => copyText(ta.value, "Message") }),
     phone ? el("a", { class: "btn ghost linkbtn", href: "sms:" + phone + "?&body=" + encodeURIComponent(ta.value), text: "Text " + r.phone, onclick: e => { e.currentTarget.href = "sms:" + phone + "?&body=" + encodeURIComponent(ta.value); } }) : null,
-    r.email ? el("a", { class: "btn ghost linkbtn", href: "#", text: "Email", onclick: e => { const body = ta.value === d.text ? d.email : ta.value; e.currentTarget.href = "mailto:" + r.email + "?subject=" + encodeURIComponent(d.subject) + "&body=" + encodeURIComponent(body); } }) : null,
+    r.email ? el("a", { class: "btn ghost linkbtn", href: "#", text: "Email " + r.email, onclick: e => { const body = ta.value === d.text ? d.email : ta.value; e.currentTarget.href = "mailto:" + r.email + "?subject=" + encodeURIComponent(d.subject) + "&body=" + encodeURIComponent(body); } }) : null,
     phone ? el("a", { class: "btn ghost linkbtn", href: "tel:" + phone, text: "Call" }) : null);
   const swap = r.phone && r.email ? el("div", { class: "seg2" },
     el("button", { type: "button", class: "link", text: "Text version", onclick: () => { ta.value = d.text; } }),
@@ -758,9 +758,13 @@ function crmDetail(r) {
   return el("div", { class: "detail-card" },
     el("div", { class: "vr-s", text: [r.service, r.status, r.how].filter(Boolean).join(" · ") }),
     r.notes ? el("div", { class: "crm-notes", text: r.notes }) : null,
+    r.phone || r.email ? el("div", { class: "contactrow" },
+      r.phone ? el("span", {}, el("b", { text: "Phone: " }), r.phone + " ", el("button", { type: "button", class: "link", text: "Copy", onclick: () => copyText(r.phone, "Phone number") })) : null,
+      r.email ? el("span", {}, el("b", { text: "Email: " }), r.email + " ", el("button", { type: "button", class: "link", text: "Copy", onclick: () => copyText(r.email, "Email address") })) : null,
+      r.email ? el("span", {}, el("b", { text: "Subject: " }), d.subject + " ", el("button", { type: "button", class: "link", text: "Copy", onclick: () => copyText(d.subject, "Subject") })) : null) : null,
     !r.phone && !r.email ? el("div", { class: "hint", text: "No phone or email in your CRM for them yet. Add one in the CRM sheet, or copy the message and send it however you reach them." }) : null,
     el("div", { class: "subhead", text: useEmail ? "Ready-to-send email" : "Ready-to-send text" }), swap, ta,
-    useEmail ? el("div", { class: "vr-s", text: "Subject: " + d.subject }) : null, send,
+    send,
     el("div", { class: "seg2" },
       el("button", { type: "button", class: "link", text: "Save as their message", onclick: () => { crmSetCustom(r, ta.value === d.email && !d.custom ? d.text : ta.value.replace(/\n\nThanks,\nJodi Smith[\s\S]*$/, "")); setStatus("Saved. " + (crmFirst(r) || r.company) + " will get this message from now on."); render(true); } }),
       d.custom ? el("button", { type: "button", class: "link", text: "Go back to the standard message", onclick: () => { crmSetCustom(r, ""); render(true); } }) : null),
