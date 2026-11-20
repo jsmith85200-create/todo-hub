@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.1";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -671,7 +671,9 @@ function absWeekly(c) {
   const save = f => put("aclients", { ...DB.aclients.get(c.id), ...f });
   const days = String(c.days || "").split(/[\s,]+/).filter(Boolean).map(Number).filter(n => n >= 0 && n <= 6);
   const nextOn = (dow, from) => { const d = new Date(from); d.setHours(0, 0, 0, 0); while (d.getDay() !== dow) d.setDate(d.getDate() + 1); return ymd(d); };
-  const after = d => { const x = addDays(parseYmd(d), 1); return days.length ? days.map(w => nextOn(w, x)).sort()[0] : ymd(addDays(parseYmd(d), 6)); };
+  // One meeting a week: the next one is the first usual day of the following week (Mon–Sun).
+  const after = d => { const x = parseYmd(d); x.setDate(x.getDate() + ((8 - x.getDay()) % 7 || 7)); return days.length ? days.map(w => nextOn(w, x)).sort()[0] : ymd(addDays(parseYmd(d), 7)); };
+  const metOn = () => c.nextDate && c.nextDate <= todayStr() ? c.nextDate : todayStr();
   const di = dueInfo(c.nextDate);
   const nd = el("input", { type: "date", id: "wn-" + c.id }); nd.value = c.nextDate || ""; nd.addEventListener("change", () => { save({ nextDate: nd.value }); render(true); });
   const quick = days.map(w => { const d = nextOn(w, new Date()); return el("button", { type: "button", class: "btn ghost" + (c.nextDate === d ? " on" : ""), text: DAYS[w].slice(0, 3) + " " + shortDate(parseYmd(d)), onclick: () => { save({ nextDate: d }); render(true); } }); });
@@ -680,7 +682,8 @@ function absWeekly(c) {
     absHead(c, c.nextDate ? el("span", { class: "chip " + (di ? di.cls : ""), text: di && di.diff === 0 ? "Meeting today" : di && di.diff < 0 ? "Was " + fmtDay(c.nextDate) : "Next: " + fmtDay(c.nextDate) }) : el("span", { class: "chip", text: "Set the next date" })),
     days.length ? el("div", { class: "vr-s", text: "Usually " + days.map(w => DAYS[w]).join(" or ") }) : null,
     quick.length ? el("div", { class: "btnrow" }, ...quick) : null,
-    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Met · set next", onclick: () => { save({ lastMet: todayStr(), nextDate: after(todayStr()) }); render(true); } })),
+    el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: c.nextDate && c.nextDate < todayStr() ? "We met " + fmtDay(c.nextDate) + " · set next" : "Met · set next", onclick: () => { const m = metOn(); save({ lastMet: m, nextDate: after(m) }); setStatus("Next meeting with " + c.name + ": " + fmtDay(after(m)) + ". Tap another day if it's different."); render(true); } }),
+      c.nextDate && c.nextDate <= todayStr() ? el("button", { type: "button", class: "btn ghost", text: "Didn't meet · pick a new day", onclick: () => { save({ nextDate: "" }); setStatus("Pick the new day above."); render(true); } }) : null),
     field("Or pick a date", nd),
     c.lastMet ? el("div", { class: "vr-s", text: "Last met " + fmtDay(c.lastMet) }) : null,
     el("details", { class: "mini" }, el("summary", { text: "Usual meeting days" }), dayPick),
