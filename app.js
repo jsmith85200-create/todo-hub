@@ -192,7 +192,7 @@ function renderTabs() {
   const counts = { home: alerts().length + " alerts", tpam: tpamStats(monthOf("tpam")).pct + "% · " + mShort(monthOf("tpam")), vicki: vickiStats(monthOf("vicki")).pct + "% · " + mShort(monthOf("vicki")), absolute: absStats(monthOf("absolute")).pct + "% · " + mShort(monthOf("absolute")), personal: itemsFor("life").filter(i => !i.done && i.section !== "absolute").length + " to do" };
   for (const [k, name] of TABS) nav.append(el("button", { type: "button", "aria-current": S.tab === k ? "page" : null, onclick: () => go(k) }, name, el("span", { class: "ct", text: counts[k] })));
 }
-function go(k) { S.tab = k; S.confirm = ""; try { history.replaceState(null, "", "#" + k); } catch (_) { location.hash = k; } render(true); window.scrollTo(0, 0); }
+function go(k) { if (k !== S.tab) delete S.m[k]; S.tab = k; S.confirm = ""; try { history.replaceState(null, "", "#" + k); } catch (_) { location.hash = k; } render(true); window.scrollTo(0, 0); }
 function render(force) {
   const ae = document.activeElement;
   if (!force && ae && (ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || (ae.tagName === "INPUT" && !["checkbox", "button"].includes(ae.type)))) { S.dirty = true; return; }
@@ -208,7 +208,7 @@ function monthPicker(key, label) {
   const isDefault = m === prevMonth();
   return el("div", { class: "mpick" },
     el("button", { type: "button", class: "mbtn", "aria-label": "Previous month", onclick: () => { S.m[key] = addM(m, -1); render(true); } }, "‹"),
-    el("div", { class: "mlabel" }, el("b", { text: mLabel(m) }), el("span", { text: label + (isDefault ? "" : " · ") }), isDefault ? null : el("button", { type: "button", class: "link", text: "Back to " + mShort(prevMonth()), onclick: () => { delete S.m[key]; render(true); } })),
+    el("div", { class: "mlabel" }, el("b", { text: mLabel(m) }), el("span", { text: label + (isDefault ? "" : " · ") }), isDefault ? null : el("button", { type: "button", class: "btn small", text: "Back to " + mShort(prevMonth()), onclick: () => { delete S.m[key]; render(true); } })),
     el("button", { type: "button", class: "mbtn", "aria-label": "Next month", disabled: m >= thisMonth(), onclick: () => { S.m[key] = addM(m, 1); render(true); } }, "›"));
 }
 function bigPct(p, sub, extra) {
@@ -616,7 +616,7 @@ function absBooks(c, p) {
       el("button", { type: "button", class: "btn " + (cur.invoiced ? "ghost" : "warn"), text: cur.invoiced ? "✓ " + mShort(tm) + " invoiced " + shortDate(parseYmd(cur.invoiced)) : "Invoice " + mShort(tm), onclick: () => { save(tm, { invoiced: cur.invoiced ? "" : todayStr() }); render(true); } })),
     notYet(c, p) || el("div", { class: "subhead", text: mLabel(p) + " close" }),
     notYet(c, p) ? null : stepper(steps, r.step, i => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); save(p, f); render(true); }, r),
-    past.length ? el("div", { class: "pastdue" }, el("b", { text: "Past months still due: " }), ...past.map(x => el("button", { type: "button", class: "chip " + (aRec(c, x).step >= 1 ? "s1" : "over"), text: mShort(x) + (aRec(c, x).step >= 1 ? " ✓" : ""), title: aRec(c, x).step >= 1 ? "Reconciled, financials not sent" : "Not reconciled", onclick: () => { S.m.absolute = x; render(true); } }))) : null,
+    past.length ? el("div", { class: "pastdue" }, el("b", { text: "Past months still due: " }), ...past.map(x => el("button", { type: "button", class: "chip " + (aRec(c, x).step >= 1 ? "s1" : "over"), text: mShort(x) + (aRec(c, x).step >= 1 ? " ✓" : ""), title: aRec(c, x).step >= 1 ? "Reconciled, financials not sent" : "Not reconciled", onclick: () => { S.m.absolute = x; render(true); window.scrollTo(0, 0); setStatus("Showing " + mLabel(x) + ". Tap \u201cBack to " + mShort(prevMonth()) + "\u201d at the top when you're done."); } }))) : null,
     recThruRow(c),
     notYet(c, p) ? null : field(mShort(p) + " blocker", textInput("ab-" + c.id + p, r.blocker, v => save(p, { blocker: v }), "Anything holding up this month")),
     cleanupList(c),
