@@ -237,3 +237,5 @@ body{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}
 .chks.board{margin:10px 0;gap:14px}
 
 .contactrow{display:flex;flex-direction:column;gap:4px;margin:8px 0;font-size:15px;word-break:break-all}
+.cu-add{grid-template-columns:1fr auto;margin-top:8px}
+@media (max-width:440px){.cu-add{grid-template-columns:1fr auto}}

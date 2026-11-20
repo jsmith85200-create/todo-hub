@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.5.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -616,10 +616,44 @@ function absBooks(c, p) {
       el("button", { type: "button", class: "btn " + (cur.invoiced ? "ghost" : "warn"), text: cur.invoiced ? "✓ " + mShort(tm) + " invoiced " + shortDate(parseYmd(cur.invoiced)) : "Invoice " + mShort(tm), onclick: () => { save(tm, { invoiced: cur.invoiced ? "" : todayStr() }); render(true); } })),
     notYet(c, p) || el("div", { class: "subhead", text: mLabel(p) + " close" }),
     notYet(c, p) ? null : stepper(steps, r.step, i => { const f = { step: i }; if (i && !r["d" + i]) f["d" + i] = todayStr(); save(p, f); render(true); }, r),
-    past.length ? el("div", { class: "pastdue" }, el("b", { text: "Past months still due: " }), ...past.map(x => el("button", { type: "button", class: "chip over", text: mShort(x), onclick: () => { S.m.absolute = x; render(true); } }))) : null,
+    past.length ? el("div", { class: "pastdue" }, el("b", { text: "Past months still due: " }), ...past.map(x => el("button", { type: "button", class: "chip " + (aRec(c, x).step >= 1 ? "s1" : "over"), text: mShort(x) + (aRec(c, x).step >= 1 ? " ✓" : ""), title: aRec(c, x).step >= 1 ? "Reconciled, financials not sent" : "Not reconciled", onclick: () => { S.m.absolute = x; render(true); } }))) : null,
+    recThruRow(c),
     notYet(c, p) ? null : field(mShort(p) + " blocker", textInput("ab-" + c.id + p, r.blocker, v => save(p, { blocker: v }), "Anything holding up this month")),
+    cleanupList(c),
     clientSettings(c));
   return box;
+}
+/* Whole-file reconciliation: "Reconciled through" line + one tap to mark every past month reconciled. */
+function recThru(c) { let last = ""; if (!c.start) return aRec(c, prevMonth()).step >= 1 ? prevMonth() : ""; for (let p = c.start; p <= prevMonth(); p = addM(p, 1)) { if (aRec(c, p).step >= 1) last = p; else break; } return last; }
+function recThruRow(c) {
+  if (!c.start) return null;
+  const end = prevMonth(), thru = recThru(c), todo = [];
+  for (let p = c.start; p <= end; p = addM(p, 1)) if (aRec(c, p).step < 1) todo.push(p);
+  const line = el("div", { class: "vr-s", text: thru ? "File reconciled through " + mLabel(thru) : "No months marked reconciled yet." });
+  if (!todo.length) return line;
+  const conf = S.confirm === "rt:" + c.id;
+  return el("div", {}, line, el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn ghost", text: conf ? "Tap again: mark " + todo.length + " month" + (todo.length > 1 ? "s" : "") + " reconciled" : "Mark file reconciled through " + mShort(end),
+    onclick: () => { if (!conf) { S.confirm = "rt:" + c.id; render(true); return; } S.confirm = ""; for (const p of todo) { const r = aRec(c, p); put("awork", { ...r, step: 1, d1: r.d1 || todayStr() }); } setStatus(mLabel(c.start) + " – " + mLabel(end) + " marked reconciled."); render(true); } })));
+}
+/* Balance sheet cleanup checklist per bookkeeping client. Saved in notes ("cleanup:<client id>") so the sync script needs no change. Nothing is deleted: checked items stay, crossed off with the date. */
+const cuId = c => "cleanup:" + c.id;
+function cuItems(c) { try { const v = JSON.parse((DB.notes.get(cuId(c)) || {}).text || "[]"); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
+const cuSave = (c, list) => put("notes", { id: cuId(c), text: JSON.stringify(list) });
+function cleanupList(c) {
+  const list = cuItems(c), open = list.filter(x => !x.done).length;
+  const det = el("details", { class: "mini" }, el("summary", { text: "Balance sheet cleanup" + (list.length ? " (" + open + " open)" : "") }));
+  if (S.open.has("cu:" + c.id) || (open && !S.open.has("cu-closed:" + c.id))) det.open = true;
+  det.addEventListener("toggle", () => { if (det.open) { S.open.add("cu:" + c.id); S.open.delete("cu-closed:" + c.id); } else { S.open.delete("cu:" + c.id); S.open.add("cu-closed:" + c.id); } });
+  list.forEach((x, i) => {
+    const id = "cu-" + c.id + "-" + i, cb = el("input", { type: "checkbox", class: "box", id }); cb.checked = !!x.done;
+    cb.addEventListener("change", () => { const l = cuItems(c); l[i] = { ...l[i], done: cb.checked, doneAt: cb.checked ? todayStr() : "" }; cuSave(c, l); render(true); });
+    det.append(el("div", { class: "rec" + (x.done ? " done" : "") }, cb, el("label", { for: id }, x.t + (x.done && x.doneAt ? " · done " + shortDate(parseYmd(x.doneAt)) : ""))));
+  });
+  const inp = el("input", { type: "text", id: "cu-new-" + c.id, placeholder: "e.g. Set up the dump trailer as a fixed asset", maxlength: 300 });
+  const add = () => { const t = inp.value.trim(); if (!t) return; cuSave(c, [...cuItems(c), { t, done: false, added: todayStr() }]); S.open.add("cu:" + c.id); render(true); };
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  det.append(el("div", { class: "row2 cu-add" }, inp, el("button", { type: "button", class: "btn", text: "Add", onclick: add })));
+  return det;
 }
 function absVa(c, p) {
   const r = aRec(c, p), di = dueInfo(absDue(c, p)), save = f => put("awork", { ...aRec(c, p), ...f });
