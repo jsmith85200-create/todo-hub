@@ -20,7 +20,7 @@ const KINDS = {
   notes:    ["id", "text", "updatedAt"],
   settings: ["id", "value", "updatedAt"],
   assoc:    ["id", "code", "name", "bank", "cam", "camDays", "order", "void", "updatedAt"],
-  tpam:     ["id", "period", "code", "step", "d1", "d2", "d3", "d4", "d5", "blocker", "note", "updatedAt"],
+  tpam:     ["id", "period", "code", "step", "d1", "d2", "d3", "d4", "d5", "emailed", "posted", "blocker", "note", "updatedAt"],
   vclients: ["id", "name", "software", "how", "note", "void", "updatedAt"],
   vwork:    ["id", "client", "svc", "freq", "start", "cthru", "rthru", "vstep", "priority", "blocker", "note", "login", "info", "void", "updatedAt"],
   aclients: ["id", "name", "type", "services", "fee", "start", "dueDay", "lastClassified", "nextDate", "lastMet", "days", "inactive", "blocker", "note", "order", "void", "updatedAt"],
@@ -75,7 +75,7 @@ function doGet(e) {
   if (p.ping) return out_({ ok: true, ping: true });
   const data = {};
   Object.keys(KINDS).forEach(function (k) { data[k] = readAll_(k); });
-  const res = { ok: true, ver: 4, now: new Date().toISOString(), data: data, crm: [], wl: [] };
+  const res = { ok: true, ver: 5, now: new Date().toISOString(), data: data, crm: [], wl: [] };
   try { res.crm = readCrm_(); } catch (err) { res.crmError = String(err.message || err); }
   try { res.wl = readWorkLocator_(); } catch (err) { res.wlError = String(err.message || err); }
   return out_(res);

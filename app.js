@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.4.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -13,8 +13,10 @@ const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /* ---- TPAM ---- */
-const T_STEPS = ["Not started", "In progress", "To CAM", "Corrections", "To CAM again", "To board"];
-const T_CLS = ["s0", "s1", "s2", "s3", "s2", "s5"];
+const T_STEPS = ["Not started", "In progress", "To CAM", "Corrections", "To CAM again", "Approved"];
+const T_CLS = ["s0", "s1", "s2", "s3", "s2", "s4"];
+const tpamDone = r => r.step >= 5 && !!r.emailed && !!r.posted;
+const tpamLabel = r => tpamDone(r) ? ["Emailed & posted", "s5"] : r.step >= 5 && (r.emailed || r.posted) ? [r.emailed ? "Emailed · post it" : "Posted · email it", "s4"] : [T_STEPS[r.step], T_CLS[r.step]];
 const ROTATION = { 1: [["HCAI", "Hillwood"], ["BPC", "Brighton Place"]], 2: [["MOA", "Marisol"], ["PBH", "Palm Bay"]], 3: [["PTCA", "Palmetto Trace"], ["PWCA", "Palms West"]], 4: [["SGI", "Sawgrass Island"], ["RVE", "Rivers Edge"]] };
 
 /* ---- Vicki's ---- */
@@ -262,7 +264,7 @@ function alerts() {
 }
 function allBlockers() {
   const out = [], pm = monthOf("tpam");
-  for (const a of assocs()) { const r = tpamRec(pm, a.code); if (r.blocker && r.step < 5) out.push(["TPAM", a.code + " · " + r.blocker]); }
+  for (const a of assocs()) { const r = tpamRec(pm, a.code); if (r.blocker && !tpamDone(r)) out.push(["TPAM", a.code + " · " + r.blocker]); }
   for (const w of live("vwork")) if (w.blocker && !(w.cthru && w.cthru >= monthOf("vicki"))) { const c = DB.vclients.get(w.client); out.push(["Vicki's", (c ? c.name : w.client) + " (" + svcName(w.svc) + ") · " + w.blocker]); }
   for (const c of live("aclients")) { if (c.blocker) out.push(["Absolute", c.name + " · " + c.blocker]); for (const p of absOpenMonths(c)) { const w = DB.awork.get(c.id + "-" + p); if (w && w.blocker) out.push(["Absolute", c.name + " " + mShort(p) + " · " + w.blocker]); } }
   return out;
@@ -326,33 +328,34 @@ function bizBack(dateStr, n) { const d = parseYmd(dateStr); let k = 0; while (k 
 const camDays = a => a.camDays || 2;
 function toCamBy(p, a) { return bizBack(tpamDue(p), camDays(a)); }
 function tpamDeadline(p, a, r) {
-  if (r.step >= 5) return null;
+  if (tpamDone(r)) return null;
+  if (r.step >= 5) { const di = dueInfo(tpamDue(p)); return di && { cls: di.cls, label: (r.emailed ? "Post" : r.posted ? "Email" : "Email & post") + " by " + shortDate(parseYmd(tpamDue(p))) }; }
   if (r.step <= 1) { const d = toCamBy(p, a), di = dueInfo(d); return di && { cls: di.cls, label: (di.diff < 0 ? "Late to CAM " : "To CAM by ") + shortDate(parseYmd(d)) }; }
   const di = dueInfo(tpamDue(p)); return di && { cls: r.step === 3 ? "over" : di.cls, label: (r.step === 3 ? "Fix · " : "") + "Board " + (di.diff < 0 ? "late " : "due ") + shortDate(parseYmd(tpamDue(p))) };
 }
 function tpamStats(p) {
   const as = assocs(), n = as.length; let sum = 0, board = 0, blockers = 0;
-  for (const a of as) { const r = tpamRec(p, a.code); sum += r.step; if (r.step >= 5) board++; if (r.blocker && r.step < 5) blockers++; }
-  return { n, board, blockers, pct: n ? Math.round(sum / (5 * n) * 100) : 0 };
+  for (const a of as) { const r = tpamRec(p, a.code); sum += Math.min(r.step, 5) + (r.step >= 5 && r.emailed ? 1 : 0) + (r.step >= 5 && r.posted ? 1 : 0); if (tpamDone(r)) board++; if (r.blocker && !tpamDone(r)) blockers++; }
+  return { n, board, blockers, pct: n ? Math.round(sum / (7 * n) * 100) : 0 };
 }
 function renderTpam(main) {
   const p = monthOf("tpam"), st = tpamStats(p), due = tpamDue(p), di = dueInfo(due);
   const dueIn = el("input", { type: "date", id: "tpam-due" }); dueIn.value = due;
   dueIn.addEventListener("change", () => { put("settings", { id: "tpamdue-" + p, value: dueIn.value }); render(true); });
-  const counts = T_STEPS.map((s, i) => [s, assocs().filter(a => tpamRec(p, a.code).step === i).length, T_CLS[i]]).filter(x => x[1]);
+  const counts = T_STEPS.map((s, i) => [i === 5 ? "Approved, not sent" : s, assocs().filter(a => { const r = tpamRec(p, a.code); return r.step === i && !tpamDone(r); }).length, T_CLS[i]]).concat([["Emailed & posted", assocs().filter(a => tpamDone(tpamRec(p, a.code))).length, "s5"]]).filter(x => x[1]);
   main.append(monthPicker("tpam", "financials"));
   main.append(el("section", { class: "card" },
-    bigPct(st.pct, st.board + " of " + st.n + " sent to board" + (st.blockers ? " · " + st.blockers + " blocked" : ""),
+    bigPct(st.pct, st.board + " of " + st.n + " emailed & posted" + (st.blockers ? " · " + st.blockers + " blocked" : ""),
       el("div", { class: "chips" }, ...counts.map(([s, n, c]) => stepChip(n + " " + s, c)))),
     el("div", { class: "duerow" }, field("Due to boards", dueIn), el("span", { class: "hint small", text: "CAMs need 2 business days (4 for the big ones) before the 15th. Corrections take longer." }), di && st.board < st.n ? el("span", { class: "chip " + di.cls, text: di.label }) : st.board === st.n && st.n ? el("span", { class: "chip step s5", text: "All sent" }) : null)));
 
   const grid = el("div", { class: "agrid" });
   for (const a of assocs()) {
     const r = tpamRec(p, a.code), open = S.open.has("t:" + a.code);
-    const tile = el("button", { type: "button", class: "atile " + T_CLS[r.step] + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("t:" + a.code) : S.open.add("t:" + a.code); render(true); } },
-      el("span", { class: "at-code", text: a.code }), el("span", { class: "at-name", text: a.name }), stepChip(T_STEPS[r.step], T_CLS[r.step]),
+    const tile = el("button", { type: "button", class: "atile " + tpamLabel(r)[1] + (open ? " sel" : ""), "aria-expanded": open ? "true" : "false", onclick: () => { open ? S.open.delete("t:" + a.code) : S.open.add("t:" + a.code); render(true); } },
+      el("span", { class: "at-code", text: a.code }), el("span", { class: "at-name", text: a.name }), stepChip(...tpamLabel(r)),
       (dl => dl ? el("span", { class: "chip " + dl.cls, text: dl.label }) : null)(tpamDeadline(p, a, r)),
-      r.blocker && r.step < 5 ? el("span", { class: "at-blk", text: "⚠ " + r.blocker }) : null);
+      r.blocker && !tpamDone(r) ? el("span", { class: "at-blk", text: "⚠ " + r.blocker }) : null);
     grid.append(tile);
     if (open) grid.append(tpamDetail(p, a, r));
   }
@@ -370,7 +373,14 @@ function tpamDetail(p, a, r) {
   return el("div", { class: "detail-card" },
     el("div", { class: "dc-h" }, el("b", { text: a.code + " · " + a.name }), el("span", { text: [a.bank, a.cam && "CAM " + a.cam].filter(Boolean).join(" · ") })),
     steps,
-    el("div", { class: "hint small", text: "Tap the step it's at. The date is stamped for your Better Financial Checklist." }),
+    r.step >= 5 ? el("div", { class: "chks board" }, ...[["emailed", "Emailed to board"], ["posted", "Posted to portal"]].map(([k, n]) => {
+      const cb = el("input", { type: "checkbox", id: "tb" + k + "-" + p + a.code }); cb.checked = !!r[k];
+      if ((SERVER.ver || 0) < 5) cb.disabled = true;
+      cb.addEventListener("change", () => { save({ [k]: cb.checked ? todayStr() : "" }); render(true); });
+      return el("label", { class: "chk" }, cb, " " + n + (r[k] ? " " + shortDate(parseYmd(r[k])) : ""));
+    })) : null,
+    r.step >= 5 && (SERVER.ver || 0) < 5 ? el("div", { class: "hint", text: "Update your sync script to turn these on (see Sync settings)." }) : null,
+    el("div", { class: "hint small", text: "Tap the step it's at. Once the CAM approves, check off Emailed to board and Posted to portal. Dates are stamped for your Better Financial Checklist." }),
     el("div", { class: "hint", text: "CAM review: " + camDays(a) + " business days · to the CAM by " + fmtDay(toCamBy(p, a)) + " · boards by " + fmtDay(tpamDue(p)) }),
     r.step === 3 ? el("div", { class: "alert over" }, el("span", { class: "a-text", text: "Corrections take longer. Fix and resend as soon as you can." })) : null,
     field("Blocker (what it's waiting on)", textInput("tb-" + p + a.code, r.blocker, v => save({ blocker: v }), "e.g. Waiting on Jeff, missing $430")),
@@ -1044,14 +1054,14 @@ function renderSettings(main) {
     catch (e) { msg.textContent = "Couldn't reach that link. Check you deployed it with access for \"Anyone\"."; return; }
     config = { url: u, token: t }; LS.set("hub:config", config); msg.textContent = "Connected. Syncing now…"; await sync(); go("home");
   };
-  if (config && (SERVER.ver || 0) < 4) {
+  if (config && (SERVER.ver || 0) < 5) {
     const ol = el("ol", { class: "steps" }, ...[
-      ["Open your ", el("a", { href: "https://docs.google.com/document/d/18KydzEAnMZ4FKWNlJSdKJ8lDUWZ3FLGfNLTTHFzWqdo/edit", target: "_blank", rel: "noopener", text: "Sync Script v4 doc" }), " and copy everything (Ctrl+A, then Ctrl+C)."],
+      ["Open your ", el("a", { href: "https://docs.google.com/document/d/1bQcluNCADSw8tEKNFerJyuGGgvEa4vvQLBTWi9OEvug/edit", target: "_blank", rel: "noopener", text: "Sync Script v5 doc" }), " and copy everything (Ctrl+A, then Ctrl+C)."],
       ["Open your ", el("a", { href: "https://docs.google.com/spreadsheets/d/1ijxZB4QUql-5bSn6a7EgyrHvSyHa24yeU-eLcOO0TO4/edit", target: "_blank", rel: "noopener", text: "To-Do Hub Data Sheet" }), " and click Extensions → Apps Script."],
       ["Click in the code, press Ctrl+A, paste (Ctrl+V), then click the save icon."],
       ["Click Deploy → Manage deployments → the pencil (Edit) → Version: New version → Deploy. Your link and sync code stay the same."],
       ["Come back here and refresh. This box disappears when it worked."]].map(parts => el("li", {}, ...parts)));
-    main.append(card("Update your sync script", "about 2 minutes", el("div", { class: "hint", text: "This lets you add contacts to your CRM from the app." }), ol));
+    main.append(card("Update your sync script", "about 2 minutes", el("div", { class: "hint", text: "This turns on adding CRM contacts and the TPAM Emailed / Posted checkboxes." }), ol));
   }
   main.append(card("Connect your Google Sheet", "", el("div", { class: "hint", text: "Paste the web app link and the sync code. You only do this once per device." }),
     field("Web app link", url), field("Sync code", tok), el("div", { class: "btnrow" }, el("button", { type: "button", class: "btn", text: "Save and connect", onclick: save })), msg));
