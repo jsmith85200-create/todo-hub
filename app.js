@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.5.1";
+const APP_VERSION = "2.6.0";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -516,6 +516,32 @@ function vRow(w, m) {
   if (open) wrap.append(vDetail(w, c));
   return wrap;
 }
+/* Monthly checklist for clients that work differently (e.g. LAMSB). The steps are saved once per client in notes ("vtpl:<client>"),
+   and each month's check-offs in notes ("vchk:<client>:<month>"), so every month starts fresh and old months are kept. */
+function vTpl(c) { try { const v = JSON.parse((DB.notes.get("vtpl:" + c.id) || {}).text || "null"); return v && Array.isArray(v.items) ? v : null; } catch (_) { return null; } }
+function vChk(c, m) { try { return JSON.parse((DB.notes.get("vchk:" + c.id + ":" + m) || {}).text || "{}") || {}; } catch (_) { return {}; } }
+function vChecklist(w, c, m) {
+  if (w.svc !== "books") return null;
+  const tpl = vTpl(c), st = vChk(c, m), done = st.done || {};
+  const saveSt = o => put("notes", { id: "vchk:" + c.id + ":" + m, text: JSON.stringify(o) });
+  const saveTpl = t => put("notes", { id: "vtpl:" + c.id, text: JSON.stringify(t) });
+  if (!tpl) return el("div", { class: "btnrow" }, el("button", { type: "button", class: "link", text: "+ Add a monthly checklist for this client", onclick: () => { saveTpl({ meeting: false, items: [] }); render(true); } }));
+  const n = tpl.items.length, k = tpl.items.filter((_, i) => done[i]).length;
+  const det = el("details", { class: "mini", open: "" }, el("summary", { text: mLabel(m) + " checklist · " + k + " of " + n + " done" }));
+  if (tpl.meeting) { const md = el("input", { type: "date", id: "vmd-" + c.id + m }); md.value = st.meeting || ""; md.addEventListener("change", () => { saveSt({ ...vChk(c, m), meeting: md.value }); render(true); }); det.append(field("Board meeting date (use it for check and report dates)", md)); }
+  tpl.items.forEach((t, i) => {
+    const id = "vck-" + c.id + "-" + m + "-" + i, cb = el("input", { type: "checkbox", class: "box", id }); cb.checked = !!done[i];
+    cb.addEventListener("change", () => { const cur = vChk(c, m), d = { ...(cur.done || {}) }; if (cb.checked) d[i] = todayStr(); else delete d[i]; saveSt({ ...cur, done: d }); render(true); });
+    const [head, ...rest] = String(t).split(" | ");
+    det.append(el("div", { class: "rec" + (done[i] ? " done" : "") }, cb, el("label", { for: id }, el("b", { text: head }), rest.length ? el("div", { class: "vr-s", text: rest.join(" · ") }) : null, done[i] ? el("span", { class: "vr-s", text: " done " + shortDate(parseYmd(done[i])) }) : null)));
+  });
+  const inp = el("input", { type: "text", id: "vck-new-" + c.id, placeholder: "Add a step (every month)" });
+  const add = () => { const t = inp.value.trim(); if (!t) return; saveTpl({ ...tpl, items: [...tpl.items, t] }); render(true); };
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  det.append(el("div", { class: "row2 cu-add" }, inp, el("button", { type: "button", class: "btn", text: "Add", onclick: add })));
+  if (n && k === n && !(w.cthru && w.cthru >= m)) det.append(el("div", { class: "hint", text: "All steps done. Tap Printed & complete above to close " + mShort(m) + "." }));
+  return det;
+}
 function vDetail(w, c) {
   const save = f => put("vwork", { ...DB.vwork.get(w.id), ...f });
   const move = f => { const cur = DB.vwork.get(w.id); if (cur.blocker) { f.blocker = ""; f.note = (cur.note ? cur.note + "; " : "") + "Old blocker: " + cur.blocker; setStatus("Moved it forward and cleared the old blocker (saved in Notes)."); } save(f); render(true); };
@@ -546,6 +572,7 @@ function vDetail(w, c) {
       w.rthru ? el("button", { type: "button", class: "btn ghost small", text: "↩ Undo received " + mShort(w.rthru), onclick: () => { const r = prevDue(w.rthru); save({ rthru: r, cthru: w.cthru && (!r || w.cthru > r) ? r : w.cthru, vstep: "" }); setStatus(mShort(w.rthru) + " is back to not received."); render(true); } }) : null) : null,
     el("div", { class: "subhead", text: "Step for the received work" }), steps,
     el("div", { class: "row2" }, field("Complete through", mi("vd-" + w.id, w.cthru, "cthru")), field("Received through", mi("vrc-" + w.id, w.rthru, "rthru")), field("Priority", pri), field("Software", soft), field("How often", freq), field("Started", mi("vst-" + w.id, w.start, "start"))),
+    vChecklist(w, c, monthOf("vicki")),
     field("Blocker", textInput("vb-" + w.id, w.blocker, v => save({ blocker: v }), "e.g. Missing September statement")),
     field("Notes", textInput("vn-" + w.id, w.note, v => save({ note: v }), "")),
     el("details", { class: "mini" }, el("summary", { text: "Change login / info links" }),
