@@ -3,7 +3,7 @@
    Works offline: everything is saved on this device first, then synced to Jodi's Google Sheet
    through her Apps Script web app. Months are kept forever; each new month starts fresh. */
 
-const APP_VERSION = "2.6.0";
+const APP_VERSION = "2.6.1";
 const KINDS = ["items", "time", "rotation", "notes", "settings", "assoc", "tpam", "vclients", "vwork", "aclients", "awork", "social"];
 const BOOL = new Set(["done", "star", "void", "manual", "inactive"]);
 const NUM = new Set(["stage", "order", "step", "priority", "dueDay", "fee", "camDays"]);
@@ -543,6 +543,7 @@ function vChecklist(w, c, m) {
   return det;
 }
 function vDetail(w, c) {
+  w = DB.vwork.get(w.id) || w; // always act on the latest saved copy, not the one from when the page was drawn
   const save = f => put("vwork", { ...DB.vwork.get(w.id), ...f });
   const move = f => { const cur = DB.vwork.get(w.id); if (cur.blocker) { f.blocker = ""; f.note = (cur.note ? cur.note + "; " : "") + "Old blocker: " + cur.blocker; setStatus("Moved it forward and cleared the old blocker (saved in Notes)."); } save(f); render(true); };
   const lastDue = p => { let x = p; for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, 1); return x; };
@@ -550,7 +551,8 @@ function vDetail(w, c) {
   const prevDue = p => { if (!p) return ""; let x = addM(p, -1); for (let i = 0; i < 13 && !vDue(w, x); i++) x = addM(x, -1); return vDue(w, x) ? x : ""; };
   const steps = el("div", { class: "stepper" });
   V_STEPS.forEach(([k, n, cls]) => steps.append(el("button", { type: "button", class: (w.vstep === k ? "on " : "") + cls, "aria-pressed": w.vstep === k ? "true" : "false", onclick: () => { if (w.vstep === k) { save({ vstep: "" }); render(true); } else if (k === "progress" || k === "review") move({ vstep: k }); else { save({ vstep: k }); render(true); } } }, n)));
-  steps.append(el("button", { type: "button", class: "s5", onclick: () => { const d = w.rthru && (!w.cthru || w.cthru < w.rthru) ? w.rthru : nextDue(w.cthru); move({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); } }, "Printed & complete"));
+  const pcD = w.rthru && (!w.cthru || w.cthru < w.rthru) ? w.rthru : nextDue(w.cthru), pcOk = pcD <= thisMonth();
+  steps.append(el("button", { type: "button", class: "s5", disabled: !pcOk, title: pcOk ? "" : "Everything up to this month is already complete", onclick: () => { if (!pcOk) return; move({ cthru: pcD, rthru: !w.rthru || w.rthru < pcD ? pcD : w.rthru, vstep: "" }); setStatus(mShort(pcD) + " marked printed & complete."); } }, pcOk ? "Printed & complete " + mShort(pcD) : "Printed & complete"));
   const mi = (id, v, f) => { const i = el("input", { type: "month", id }); i.value = v || ""; i.addEventListener("change", () => { save({ [f]: i.value }); render(true); }); return i; };
   const soft = el("select", { id: "vs-" + w.id }, ...V_SOFT.map(([k, n]) => el("option", { value: k, text: n }))); soft.value = c.software || "";
   soft.addEventListener("change", () => { put("vclients", { ...c, software: soft.value }); render(true); });
@@ -565,8 +567,8 @@ function vDetail(w, c) {
   return el("div", { class: "detail-card" },
     links.childNodes.length ? links : null,
     el("div", { class: "btnrow" },
-      el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => move({ rthru: nextDue(w.rthru), vstep: w.rthru && w.cthru && w.cthru < w.rthru ? w.vstep : "" }) }),
-      el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); move({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); } })),
+      nextDue(w.rthru) <= thisMonth() ? el("button", { type: "button", class: "btn", text: "Received " + mShort(nextDue(w.rthru)), onclick: () => { move({ rthru: nextDue(w.rthru), vstep: w.rthru && w.cthru && w.cthru < w.rthru ? w.vstep : "" }); setStatus(mShort(nextDue(w.rthru)) + " marked received."); } }) : el("div", { class: "hint small", text: "Received through " + mShort(w.rthru) + " — nothing newer to receive yet." }),
+      nextDue(w.cthru) <= thisMonth() ? el("button", { type: "button", class: "btn ghost", text: "Complete " + mShort(nextDue(w.cthru)), onclick: () => { const d = nextDue(w.cthru); move({ cthru: d, rthru: !w.rthru || w.rthru < d ? d : w.rthru, vstep: "" }); setStatus(mShort(d) + " marked complete."); } }) : null),
     (w.cthru || w.rthru) ? el("div", { class: "btnrow" },
       w.cthru ? el("button", { type: "button", class: "btn ghost small", text: "↩ Undo complete " + mShort(w.cthru), onclick: () => { save({ cthru: prevDue(w.cthru) }); setStatus(mShort(w.cthru) + " is back to not complete."); render(true); } }) : null,
       w.rthru ? el("button", { type: "button", class: "btn ghost small", text: "↩ Undo received " + mShort(w.rthru), onclick: () => { const r = prevDue(w.rthru); save({ rthru: r, cthru: w.cthru && (!r || w.cthru > r) ? r : w.cthru, vstep: "" }); setStatus(mShort(w.rthru) + " is back to not received."); render(true); } }) : null) : null,
@@ -1174,4 +1176,23 @@ function flush(key, fn, statusId) { if (timers.has(key)) { clearTimeout(timers.g
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { render(); sync(); } });
   addEventListener("storage", e => { if (e.key === "hub:data") { loadLocal(); render(); } });
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+  setTimeout(checkForUpdate, 5000); setInterval(checkForUpdate, 10 * 60000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForUpdate(); });
 })();
+/* A window left open keeps running the old code forever. Look for a newer published version and switch to it
+   once nothing is waiting to save and you're not typing. */
+let updateReady = "";
+async function checkForUpdate() {
+  try {
+    if (!navigator.onLine || location.protocol !== "https:") return;
+    if (!updateReady) {
+      const txt = await (await fetch("app.js?v=" + Date.now(), { cache: "no-store" })).text();
+      const v = (txt.match(/APP_VERSION = "([0-9.]+)"/) || [])[1];
+      if (!v || v === APP_VERSION) return;
+      updateReady = v;
+    }
+    const ae = document.activeElement, typing = ae && (ae.tagName === "TEXTAREA" || (ae.tagName === "INPUT" && !["checkbox", "button"].includes(ae.type)));
+    if (Object.keys(queue).length || syncState.busy || typing) { setTimeout(checkForUpdate, 5000); return; }
+    location.reload();
+  } catch (_) {}
+}
